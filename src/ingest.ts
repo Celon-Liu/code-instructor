@@ -1,20 +1,31 @@
 export type ExtractedPlanItem = {
   text: string;
   done: boolean;
+  group?: string;
 };
 
 export function extractPlanItems(raw: string): ExtractedPlanItem[] {
   const s = (raw || "").replace(/\r\n/g, "\n");
-  const lines = s.split("\n").map((l) => l.trim()).filter(Boolean);
+  const lines = s.split("\n");
   const out: ExtractedPlanItem[] = [];
+  let currentGroup: string | undefined;
 
   for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    const heading = trimmed.match(/^##\s+(.*)$/);
+    if (heading?.[1]) {
+      currentGroup = heading[1].trim();
+      continue;
+    }
+
     // Match task checkboxes:
     // - [ ] foo
     // - [x] foo
-    const c = line.match(/^[-*]\s+\[( |x|X)\]\s+(.*)$/);
+    const c = trimmed.match(/^[-*]\s+\[( |x|X)\]\s+(.*)$/);
     if (c && c[2]) {
-      out.push({ text: c[2].trim(), done: (c[1] || "").toLowerCase() === "x" });
+      out.push({ text: c[2].trim(), done: (c[1] || "").toLowerCase() === "x", group: currentGroup });
       continue;
     }
 
@@ -23,14 +34,14 @@ export function extractPlanItems(raw: string): ExtractedPlanItem[] {
     // * foo
     // 1. foo
     // 1) foo
-    const m = line.match(/^([-*]|(\d+)[.)])\s+(.*)$/);
+    const m = trimmed.match(/^([-*]|(\d+)[.)])\s+(.*)$/);
     if (m && m[3]) {
-      out.push({ text: m[3].trim(), done: false });
+      out.push({ text: m[3].trim(), done: false, group: currentGroup });
       continue;
     }
 
     // Fallback: treat as a step if it's not too short
-    if (line.length >= 6) out.push({ text: line, done: false });
+    if (trimmed.length >= 6) out.push({ text: trimmed, done: false, group: currentGroup });
   }
 
   // De-dup while preserving order

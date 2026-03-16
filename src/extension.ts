@@ -1,6 +1,12 @@
 import * as vscode from "vscode";
 import { summarizeDiagnostics } from "./diagnostics";
-import { answerWithOptionalCloud, assessProjectWithOptionalCloud, inferCompletedPlanTextsWithOptionalCloud, summarizeGoalFromText } from "./llm";
+import {
+  answerWithOptionalCloud,
+  assessProjectWithOptionalCloud,
+  calibratePlanItemsWithOptionalCloud,
+  inferCompletedPlanTextsWithOptionalCloud,
+  summarizeGoalFromText
+} from "./llm";
 import { SidebarViewProvider } from "./sidebarView";
 import { StateStore } from "./state";
 import { resolveBuildCommand, resolveTestCommand, runCommand } from "./validity";
@@ -28,34 +34,38 @@ export function activate(context: vscode.ExtensionContext) {
   let assessRunning = false;
   let lastAssessAt = 0;
   const scheduleProjectAssessment = (reason: string) => {
-    const cfg = vscode.workspace.getConfiguration("aiDevCoach");
-    if (!cfg.get<boolean>("cloud.enabled", false)) return;
-    if (!cfg.get<string>("cloud.apiKey", "").trim()) return;
     if (assessTimer) clearTimeout(assessTimer);
     assessTimer = setTimeout(() => {
       void runProjectAssessment(reason);
-    }, 2500);
+    }, 1200);
   };
-  const runProjectAssessment = async (reason: string) => {
+  const runProjectAssessment = async (reason: string, force = false) => {
     if (assessRunning) return;
-    if (Date.now() - lastAssessAt < 15000) return;
+    if (!force && Date.now() - lastAssessAt < 5000) return;
     assessRunning = true;
+    store.setLlmRefresh({ state: "loading", note: reason });
     try {
       const state = store.snapshot();
       const evidence = await buildProjectEvidence(state);
       const assessed = await assessProjectWithOptionalCloud(state, evidence);
       store.applyProjectAssessment(assessed);
-      const completedByLlm = await inferCompletedPlanTextsWithOptionalCloud(store.snapshot(), evidence);
-      if (completedByLlm.length > 0) {
-        const changed = store.markPlanDoneByTexts(completedByLlm);
+      const completion = await inferCompletedPlanTextsWithOptionalCloud(store.snapshot(), evidence);
+      if (completion.available) {
+        const changed = store.syncPlanDoneByTexts(completion.completed);
         if (changed > 0) {
-          store.pushTimeline("plan/step/added", `LLM auto-marked ${changed} plan step(s) as done.`);
+          store.pushTimeline("plan/step/added", `LLM refreshed plan completion: ${changed} step(s) updated.`);
+        } else if (completion.completed.length === 0) {
+          store.pushTimeline("analysis/updated", "LLM plan mapping returned 0 completed items from current evidence.");
         }
+      } else if (completion.reason && completion.reason !== "no-plan") {
+        store.pushTimeline("analysis/updated", `LLM plan mapping skipped: ${completion.reason}`);
       }
       store.pushTimeline("analysis/updated", `Project assessment updated (${assessed.source}) [${reason}]`);
+      store.setLlmRefresh({ state: "done", note: `${assessed.source}:${reason}` });
       lastAssessAt = Date.now();
-    } catch {
-      // fall back silently; heuristics remain active
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      store.setLlmRefresh({ state: "error", note: msg.slice(0, 180) });
     } finally {
       assessRunning = false;
     }
@@ -121,6 +131,16 @@ export function activate(context: vscode.ExtensionContext) {
 
   const baselineGoalFile = "goal.md";
   const baselinePlanFile = "plan.md";
+  const listWorkspaceCodeFiles = async () => {
+    const ws = vscode.workspace.workspaceFolders?.[0];
+    if (!ws) return [] as string[];
+    const uris = await vscode.workspace.findFiles(
+      "**/*.{ts,tsx,js,jsx,json,md,yml,yaml}",
+      "**/{node_modules,dist,.git,out,.next,coverage}/**",
+      120
+    );
+    return uris.map((u) => vscode.workspace.asRelativePath(u));
+  };
   const readWorkspaceRootFile = async (fileName: string): Promise<string | undefined> => {
     const ws = vscode.workspace.workspaceFolders?.[0];
     if (!ws) return undefined;
@@ -156,7 +176,26 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }
     if (planRaw) {
-      const items = extractPlanItems(planRaw);
+      let items = extractPlanItems(planRaw);
+      if (items.length > 0 && hasGoal) {
+        const snap = store.snapshot();
+        const files = await listWorkspaceCodeFiles();
+        const calibrated = await calibratePlanItemsWithOptionalCloud(
+          {
+            title: snap.goal.title,
+            summary: snap.goal.summary,
+            objectives: snap.goal.objectives
+          },
+          items,
+          files
+        );
+        if (calibrated.applied) {
+          items = calibrated.items;
+          store.pushTimeline("plan/step/added", `Plan calibrated with goal+workspace evidence (${items.length} items).`);
+        } else {
+          store.pushTimeline("plan/step/added", `Plan calibration skipped: ${calibrated.note}`);
+        }
+      }
       if (items.length > 0) {
         planCount = store.setPlan(items);
       }
@@ -164,7 +203,10 @@ export function activate(context: vscode.ExtensionContext) {
 
     if (hasGoal) store.pushTimeline("goal/baseline/imported", `Imported goal baseline from ${baselineGoalFile}`);
     if (planCount > 0) store.pushTimeline("plan/baseline/imported", `Imported ${planCount} plan steps from ${baselinePlanFile}`);
-    if (hasGoal || planCount > 0) scheduleProjectAssessment(reason);
+    if (hasGoal || planCount > 0) {
+      scheduleProjectAssessment(reason);
+      void runProjectAssessment(`${reason}-immediate`, true);
+    }
     preferWorkspaceBaselines = hasGoal || planCount > 0;
     if (!silent) {
       if (hasGoal || planCount > 0) {
@@ -748,12 +790,20 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  context.subscriptions.push(
+    vscode.commands.registerCommand("aiDevCoach.forceRefreshAssessment", async () => {
+      store.pushTimeline("analysis/updated", "Manual force refresh requested.");
+      await runProjectAssessment("manual-force-refresh", true);
+    })
+  );
+
   // Internal command used by the webview to send chat
   context.subscriptions.push(
     vscode.commands.registerCommand("aiDevCoach.chatSend", async (text: string) => {
       store.addChat("user", text);
       const state = store.snapshot();
-      const answer = await answerWithOptionalCloud(text, state);
+      const evidence = await buildProjectEvidence(state);
+      const answer = await answerWithOptionalCloud(text, state, evidence);
       store.addChat("assistant", answer);
       scheduleProjectAssessment("chat");
     })

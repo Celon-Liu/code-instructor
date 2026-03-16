@@ -32,6 +32,7 @@ export type PlanStep = {
   ts: number;
   text: string;
   done: boolean;
+  group?: string;
 };
 
 export type ValidityStatus =
@@ -67,6 +68,14 @@ export type MonitorAlert = {
   nextActions: string[];
 };
 
+export type MonitorRuntime = {
+  engaged: boolean;
+  handling: boolean;
+  realtime: boolean;
+  state: "not_started" | "active" | "lagging" | "blocked";
+  detail: string;
+};
+
 export type ChatMessage = {
   id: string;
   ts: number;
@@ -86,6 +95,12 @@ export type ProjectAssessment = {
   buildCheckMeaning: string;
 };
 
+export type LlmRefreshStatus = {
+  state: "idle" | "loading" | "done" | "error";
+  updatedAt: number;
+  note?: string;
+};
+
 export type AppState = {
   timeline: TimelineEvent[];
   plan: PlanStep[];
@@ -94,6 +109,8 @@ export type AppState = {
   validity: ValidityStatus;
   deviation: DeviationSummary;
   monitor: MonitorAlert;
+  monitorRuntime: MonitorRuntime;
+  llmRefresh: LlmRefreshStatus;
   assessment: ProjectAssessment;
   chat: ChatMessage[];
 };

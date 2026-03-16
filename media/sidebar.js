@@ -48,6 +48,7 @@
     var chatInput = $("chatInput");
     var chatSend = $("chatSend");
     var btnSetGoal = $("btnSetGoal");
+    var btnForceRefresh = $("btnForceRefresh");
     var goalText = $("goalText");
     var planList = $("planList");
 
@@ -63,6 +64,11 @@
       btnSetGoal.textContent = i18n.importing || "Importing...";
       vscode.postMessage({ type: "command/setGoalFromClipboard" });
     });
+    if (btnForceRefresh) {
+      btnForceRefresh.addEventListener("click", function () {
+        vscode.postMessage({ type: "command/forceRefreshAssessment" });
+      });
+    }
 
     goalText.addEventListener("click", function () {
       goalExpanded = !goalExpanded;
@@ -183,14 +189,58 @@
       var hasGoal = Boolean(state.goal && state.goal.source && state.goal.source !== "none");
       var hasPlan = Array.isArray(state.plan) && state.plan.length > 0;
       var done = hasPlan ? state.plan.filter(function (p) { return p.done; }).length : 0;
-      var monitoring = hasGoal;
-      var status = monitoring ? (i18n.statusRunning || "Monitoring") : (i18n.statusNotStarted || "Not started");
+      var runtime = state.monitorRuntime || {};
+      var runtimeState = String(runtime.state || (hasGoal ? "active" : "not_started"));
+      var status = runtimeState === "blocked"
+        ? (i18n.statusBlocked || "Blocked")
+        : runtimeState === "lagging"
+          ? (i18n.statusLagging || "Lagging feedback")
+          : runtimeState === "active"
+            ? (i18n.statusRunning || "Monitoring")
+            : (i18n.statusNotStarted || "Not started");
 
       var summaryStatus = $("summaryStatus");
       if (summaryStatus) {
         summaryStatus.textContent = status;
-        summaryStatus.className = "v " + (monitoring ? "state-good" : "state-bad");
+        summaryStatus.className = "v " + (
+          runtimeState === "active"
+            ? "state-good"
+            : runtimeState === "not_started"
+              ? "state-bad"
+              : "state-warn"
+        );
+        if (runtime && runtime.detail) summaryStatus.title = String(runtime.detail);
       }
+      var summaryStatusMeta = $("summaryStatusMeta");
+      if (summaryStatusMeta) {
+        var lr = state.llmRefresh || { state: "idle" };
+        var lrState = String(lr.state || "idle");
+        var lrLabel =
+          lrState === "loading" ? (i18n.llmLoading || "loading...")
+            : lrState === "done" ? (i18n.llmDone || "done")
+              : lrState === "error" ? (i18n.llmError || "error")
+                : (i18n.llmIdle || "idle");
+        var when = lr.updatedAt ? fmtTime(lr.updatedAt) : "—";
+        summaryStatusMeta.textContent = (i18n.llmRefresh || "LLM refresh") + ": " + lrLabel + " @ " + when;
+        if (lr.note) summaryStatusMeta.title = String(lr.note);
+      }
+      if (btnForceRefresh) {
+        var isLoading = (state.llmRefresh || {}).state === "loading";
+        btnForceRefresh.disabled = Boolean(isLoading);
+        btnForceRefresh.textContent = isLoading
+          ? (i18n.forceRefreshing || "Refreshing...")
+          : (i18n.forceRefresh || "Force refresh");
+      }
+      var yesText = i18n.yes || "Yes";
+      var noText = i18n.no || "No";
+      var runtimeEngagedVal = $("runtimeEngagedVal");
+      if (runtimeEngagedVal) runtimeEngagedVal.textContent = runtime.engaged ? yesText : noText;
+      var runtimeHandlingVal = $("runtimeHandlingVal");
+      if (runtimeHandlingVal) runtimeHandlingVal.textContent = runtime.handling ? yesText : noText;
+      var runtimeRealtimeVal = $("runtimeRealtimeVal");
+      if (runtimeRealtimeVal) runtimeRealtimeVal.textContent = runtime.realtime ? yesText : noText;
+      var runtimeDetail = $("runtimeDetail");
+      if (runtimeDetail) runtimeDetail.textContent = String(runtime.detail || "—");
       var summaryProgress = $("summaryProgress");
       if (summaryProgress) {
         var total = (state.plan || []).length;
@@ -220,23 +270,55 @@
         emptyPlan.textContent = i18n.noPlanYet || "No plan steps yet.";
         planList.appendChild(emptyPlan);
       } else {
-        for (var pIdx = 0; pIdx < plans.length; pIdx += 1) {
-          var p = plans[pIdx];
-          var row = document.createElement("div");
-          row.className = "planEntry";
+        var groups = {};
+        var groupOrder = [];
+        for (var gpIdx = 0; gpIdx < plans.length; gpIdx += 1) {
+          var gp = plans[gpIdx];
+          var groupName = String(gp.group || i18n.groupDefault || "Ungrouped");
+          if (!groups[groupName]) {
+            groups[groupName] = [];
+            groupOrder.push(groupName);
+          }
+          groups[groupName].push(gp);
+        }
 
-          var inner = document.createElement("div");
-          inner.className = "planEntryRow";
-          var icon = document.createElement("span");
-          icon.className = p.done ? "planIconDone" : "planIconTodo";
-          icon.textContent = p.done ? "✅" : "⬜";
-          var text = document.createElement("span");
-          text.textContent = String(p.text || "");
-          if (p.done) text.className = "planTextDone";
-          inner.appendChild(icon);
-          inner.appendChild(text);
-          row.appendChild(inner);
-          planList.appendChild(row);
+        for (var gIdx = 0; gIdx < groupOrder.length; gIdx += 1) {
+          var gName = groupOrder[gIdx];
+          var gPlans = groups[gName];
+          var gDone = gPlans.filter(function (x) { return x.done; }).length;
+
+          var details = document.createElement("details");
+          details.className = "planGroup";
+          if (gIdx <= 1) details.open = true;
+
+          var summary = document.createElement("summary");
+          summary.className = "planGroupSummary";
+          summary.textContent = gName + " · " + gDone + "/" + gPlans.length;
+          details.appendChild(summary);
+
+          var groupBody = document.createElement("div");
+          groupBody.className = "planGroupBody";
+
+          for (var pIdx = 0; pIdx < gPlans.length; pIdx += 1) {
+            var p = gPlans[pIdx];
+            var row = document.createElement("div");
+            row.className = "planEntry";
+
+            var inner = document.createElement("div");
+            inner.className = "planEntryRow";
+            var icon = document.createElement("span");
+            icon.className = p.done ? "planIconDone" : "planIconTodo";
+            icon.textContent = p.done ? "✅" : "⬜";
+            var text = document.createElement("span");
+            text.textContent = String(p.text || "");
+            if (p.done) text.className = "planTextDone";
+            inner.appendChild(icon);
+            inner.appendChild(text);
+            row.appendChild(inner);
+            groupBody.appendChild(row);
+          }
+          details.appendChild(groupBody);
+          planList.appendChild(details);
         }
       }
 

@@ -12,15 +12,15 @@ function getConfig() {
   };
 }
 
-export async function answerWithOptionalCloud(prompt: string, state: AppState): Promise<string> {
+export async function answerWithOptionalCloud(prompt: string, state: AppState, evidence?: string): Promise<string> {
   const { enabled, provider, apiKey } = getConfig();
   if (!enabled) return localAnswer(prompt, state);
   if (!apiKey) return "Cloud is enabled but no API key is configured (`aiDevCoach.cloud.apiKey`).";
 
   try {
-    if (provider === "openai") return await answerOpenAI(prompt, state, apiKey);
-    if (provider === "anthropic") return await answerAnthropic(prompt, state, apiKey);
-    if (provider === "deepseek") return await answerDeepSeek(prompt, state, apiKey);
+    if (provider === "openai") return await answerOpenAI(prompt, state, apiKey, evidence);
+    if (provider === "anthropic") return await answerAnthropic(prompt, state, apiKey, evidence);
+    if (provider === "deepseek") return await answerDeepSeek(prompt, state, apiKey, evidence);
     return "Custom provider is selected but not implemented yet.";
   } catch (e: unknown) {
     return `Cloud request failed: ${String((e as Error)?.message ?? e)}`;
@@ -157,47 +157,186 @@ export async function summarizeGoalFromText(raw: string): Promise<{ title: strin
   }
 }
 
-export async function inferCompletedPlanTextsWithOptionalCloud(state: AppState, evidence: string): Promise<string[]> {
-  const plans = state.plan.map((p) => p.text.trim()).filter(Boolean);
-  if (plans.length === 0) return [];
+export async function calibratePlanItemsWithOptionalCloud(
+  goal: { title: string; summary: string; objectives: string[] } | undefined,
+  items: Array<{ text: string; done?: boolean; group?: string }>,
+  workspaceFiles: string[]
+): Promise<{ applied: boolean; items: Array<{ text: string; done: boolean; group?: string }>; note: string }> {
+  const normalizedItems = items.map((x) => ({ text: x.text, done: Boolean(x.done), group: x.group }));
+  if (!goal || !items.length) return { applied: false, items: normalizedItems, note: "missing-goal-or-plan" };
   const { enabled, provider, apiKey } = getConfig();
-  if (!enabled || !apiKey.trim()) return [];
+  if (!enabled || !apiKey.trim()) return { applied: false, items: normalizedItems, note: "cloud-disabled" };
+
+  const prompt = [
+    "你是项目计划校准助手。请把计划项校准为“可验证、可执行、与当前代码文件相关”的条目。",
+    "要求：",
+    "1) 保留原有优先级分组（如 P0~P4/回归测试清单），可微调条目文案；",
+    "2) 每条必须是可执行动作，尽量指向模块/文件；",
+    "3) 删除明显与目标无关或重复项；",
+    "4) 返回 JSON 且仅 JSON。",
+    'JSON schema: {"items":[{"group":"string","text":"string","done":false}]}',
+    "",
+    `目标标题: ${goal.title}`,
+    `目标摘要: ${goal.summary}`,
+    `目标要点: ${(goal.objectives || []).join(" | ") || "(none)"}`,
+    "",
+    "当前计划项：",
+    items.map((x, i) => `${i + 1}. [${x.group || "Ungrouped"}] ${x.text}`).join("\n"),
+    "",
+    "工作区文件（截断）：",
+    workspaceFiles.slice(0, 80).join("\n")
+  ].join("\n");
+
+  const callOpenAI = async () => {
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: "gpt-4.1-mini",
+        messages: [
+          { role: "system", content: "You are a plan calibration assistant. Return JSON only." },
+          { role: "user", content: prompt }
+        ],
+        temperature: 0.2
+      })
+    });
+    if (!r.ok) return "";
+    const json = (await r.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    return json.choices?.[0]?.message?.content || "";
+  };
+  const callAnthropic = async () => {
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01"
+      },
+      body: JSON.stringify({
+        model: "claude-3-5-sonnet-20241022",
+        max_tokens: 900,
+        messages: [{ role: "user", content: prompt }]
+      })
+    });
+    if (!r.ok) return "";
+    const json = (await r.json()) as { content?: Array<{ type: string; text?: string }> };
+    return json.content?.find((c) => c.type === "text")?.text || "";
+  };
+  const callDeepSeek = async () => {
+    const r = await fetch("https://api.deepseek.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: "deepseek-chat",
+        messages: [
+          { role: "system", content: "你是计划校准助手，只输出 JSON。" },
+          { role: "user", content: prompt }
+        ],
+        temperature: 0.2
+      })
+    });
+    if (!r.ok) return "";
+    const json = (await r.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    return json.choices?.[0]?.message?.content || "";
+  };
+
   try {
-    if (provider === "openai") return await inferCompletedWithOpenAI(state, evidence, apiKey);
-    if (provider === "anthropic") return await inferCompletedWithAnthropic(state, evidence, apiKey);
-    if (provider === "deepseek") return await inferCompletedWithDeepSeek(state, evidence, apiKey);
-    return [];
+    const raw =
+      provider === "openai" ? await callOpenAI() : provider === "anthropic" ? await callAnthropic() : provider === "deepseek" ? await callDeepSeek() : "";
+    const jsonText = extractJsonObject(raw) ?? raw.trim();
+    const parsed = JSON.parse(jsonText) as Partial<{ items: Array<{ text: string; done?: boolean; group?: string }> }>;
+    const next = Array.isArray(parsed.items)
+      ? parsed.items
+          .map((x) => ({ text: String(x.text || "").trim(), done: Boolean(x.done), group: String(x.group || "").trim() || undefined }))
+          .filter((x) => x.text.length > 0)
+      : [];
+    if (!next.length) return { applied: false, items: normalizedItems, note: "empty-calibration-result" };
+    return { applied: true, items: next, note: `calibrated-${next.length}` };
   } catch {
-    return [];
+    return { applied: false, items: normalizedItems, note: "calibration-failed" };
+  }
+}
+
+export type PlanCompletionInference = {
+  available: boolean;
+  completed: string[];
+  reason?: "ok" | "disabled" | "no-plan" | "provider-not-supported" | "request-failed";
+};
+
+export async function inferCompletedPlanTextsWithOptionalCloud(
+  state: AppState,
+  evidence: string
+): Promise<PlanCompletionInference> {
+  const plans = state.plan.map((p) => p.text.trim()).filter(Boolean);
+  if (plans.length === 0) return { available: false, completed: [], reason: "no-plan" };
+  const { enabled, provider, apiKey } = getConfig();
+  if (!enabled || !apiKey.trim()) return { available: false, completed: [], reason: "disabled" };
+  try {
+    if (provider === "openai") return { available: true, completed: await inferCompletedWithOpenAI(state, evidence, apiKey), reason: "ok" };
+    if (provider === "anthropic") return { available: true, completed: await inferCompletedWithAnthropic(state, evidence, apiKey), reason: "ok" };
+    if (provider === "deepseek") return { available: true, completed: await inferCompletedWithDeepSeek(state, evidence, apiKey), reason: "ok" };
+    return { available: false, completed: [], reason: "provider-not-supported" };
+  } catch {
+    return { available: false, completed: [], reason: "request-failed" };
   }
 }
 
 function normalizeCompletedTexts(raw: string, planTexts: string[]): string[] {
   const jsonText = extractJsonObject(raw) ?? raw.trim();
   let parsedList: string[] = [];
+  let parsedIndices: number[] = [];
+  const normalizeForMatch = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[`"'“”‘’]/g, "")
+      .replace(/\s+/g, " ")
+      .replace(/[，。！？；：,.!?;:()（）【】\[\]-]/g, "")
+      .trim();
+
   try {
-    const obj = JSON.parse(jsonText) as Partial<{ completed: string[] }>;
+    const obj = JSON.parse(jsonText) as Partial<{ completed: string[]; completedIndices: number[] }>;
     if (Array.isArray(obj.completed)) parsedList = obj.completed.map((x) => String(x).trim()).filter(Boolean);
+    if (Array.isArray(obj.completedIndices)) {
+      parsedIndices = obj.completedIndices
+        .map((x) => Number(x))
+        .filter((x) => Number.isInteger(x) && x >= 1 && x <= planTexts.length);
+    }
   } catch {
     parsedList = [];
+    parsedIndices = [];
   }
-  if (!parsedList.length) return [];
-  const planByLower = new Map(planTexts.map((x) => [x.toLowerCase(), x]));
-  const out: string[] = [];
+  if (!parsedList.length && !parsedIndices.length) return [];
+
+  const out = new Set<string>();
+  for (const idx of parsedIndices) out.add(planTexts[idx - 1] as string);
+
+  const planByNorm = new Map(planTexts.map((x) => [normalizeForMatch(x), x]));
   for (const item of parsedList) {
-    const key = item.toLowerCase();
-    if (planByLower.has(key)) out.push(planByLower.get(key) as string);
+    const direct = planByNorm.get(normalizeForMatch(item));
+    if (direct) {
+      out.add(direct);
+      continue;
+    }
+    const itemNorm = normalizeForMatch(item);
+    if (!itemNorm) continue;
+    for (const [norm, original] of planByNorm) {
+      if (itemNorm.includes(norm) || norm.includes(itemNorm)) {
+        out.add(original);
+        break;
+      }
+    }
   }
-  return [...new Set(out)];
+  return Array.from(out);
 }
 
 function completedPlanPrompt(state: AppState, evidence: string): string {
   const plans = state.plan.map((p, i) => `${i + 1}. ${p.done ? "[DONE]" : "[TODO]"} ${p.text}`).join("\n");
   return [
-    "你是开发进度审计助手。根据代码证据判断哪些计划项已经完成。",
+    "你是开发进度审计助手。请遍历并比对工作区代码证据，判断哪些计划项已经完成。",
     "要求：仅能从给定计划列表中选择；证据不足则不要猜。",
     "输出必须是 JSON 且仅 JSON。",
-    'JSON schema: {"completed": ["计划原文，必须与列表完全一致"]}',
+    'JSON schema: {"completedIndices":[1,2], "completed": ["计划原文，可选"]}',
+    "优先返回 completedIndices（从1开始），可同时返回 completed。",
     "",
     "计划列表：",
     plans,
@@ -473,7 +612,13 @@ async function assessWithDeepSeek(state: AppState, evidence: string, apiKey: str
   return parseAssessment(raw) || (raw ? textFallbackAssessment(raw, state) : localAssessment(state));
 }
 
-async function answerOpenAI(prompt: string, state: AppState, apiKey: string): Promise<string> {
+function chatEvidenceBlock(evidence?: string): string {
+  if (!evidence?.trim()) return "Code evidence: (not provided)";
+  const trimmed = evidence.length > 7000 ? `${evidence.slice(0, 7000)}\n...(truncated)` : evidence;
+  return `Code evidence:\n${trimmed}`;
+}
+
+async function answerOpenAI(prompt: string, state: AppState, apiKey: string, evidence?: string): Promise<string> {
   // Minimal call (no tool calling). We keep payload small: high-level signals only.
   const body = {
     model: "gpt-4.1-mini",
@@ -481,7 +626,7 @@ async function answerOpenAI(prompt: string, state: AppState, apiKey: string): Pr
       {
         role: "system",
         content:
-          "You are a VS Code assistant focused on development progress, goal deviation, and code validity. Be concise and actionable."
+          "You are a VS Code engineering coach. Answer only from provided project signals and evidence. If evidence is insufficient, explicitly say so and request the exact missing artifact."
       },
       {
         role: "user",
@@ -496,6 +641,13 @@ async function answerOpenAI(prompt: string, state: AppState, apiKey: string): Pr
           `- validity: ${state.validity.state}`,
           `- monitor: ${state.monitor.level} | ${state.monitor.reasons.join(" / ")}`,
           `- planSteps: ${state.plan.slice(0, 10).map((s) => `${s.done ? "[x]" : "[ ]"} ${s.text}`).join(" | ") || "(none)"}`,
+          "",
+          chatEvidenceBlock(evidence),
+          "",
+          "Output rules:",
+          "1) Always reference at least 2 concrete signals/evidence points.",
+          "2) Give 2-4 specific next coding actions (file/module oriented when possible).",
+          "3) No generic motivation text.",
           ""
         ].join("\n")
       }
@@ -520,7 +672,7 @@ async function answerOpenAI(prompt: string, state: AppState, apiKey: string): Pr
   return text || "(empty response)";
 }
 
-async function answerAnthropic(prompt: string, state: AppState, apiKey: string): Promise<string> {
+async function answerAnthropic(prompt: string, state: AppState, apiKey: string, evidence?: string): Promise<string> {
   const body = {
     model: "claude-3-5-sonnet-20241022",
     max_tokens: 300,
@@ -539,7 +691,11 @@ async function answerAnthropic(prompt: string, state: AppState, apiKey: string):
           `Diagnostics: ${state.diagnostics.errors} errors, ${state.diagnostics.warnings} warnings`,
           `Validity: ${state.validity.state}`,
           `Monitor: ${state.monitor.level} | ${state.monitor.reasons.join(" / ")}`,
-          `Plan: ${state.plan.slice(0, 10).map((s) => `${s.done ? "[x]" : "[ ]"} ${s.text}`).join(" | ") || "(none)"}`
+          `Plan: ${state.plan.slice(0, 10).map((s) => `${s.done ? "[x]" : "[ ]"} ${s.text}`).join(" | ") || "(none)"}`,
+          "",
+          chatEvidenceBlock(evidence),
+          "",
+          "Rules: cite concrete evidence, avoid generic replies, provide actionable next steps."
         ].join("\n")
       }
     ]
@@ -563,7 +719,7 @@ async function answerAnthropic(prompt: string, state: AppState, apiKey: string):
   return text || "(empty response)";
 }
 
-async function answerDeepSeek(prompt: string, state: AppState, apiKey: string): Promise<string> {
+async function answerDeepSeek(prompt: string, state: AppState, apiKey: string, evidence?: string): Promise<string> {
   // DeepSeek 提供 OpenAI 兼容接口，这里按 chat/completions 调用
   const body = {
     model: "deepseek-chat",
@@ -571,7 +727,7 @@ async function answerDeepSeek(prompt: string, state: AppState, apiKey: string): 
       {
         role: "system",
         content:
-          "你是一个代码开发进度监理助手。必须围绕'用户目标-当前证据-下一步动作'回答。禁止空泛口号；若证据不足必须明确写出'证据不足'并要求补充可验证信号（代码改动/构建/测试/计划）。发现可能AI兜圈子时要明确提出异议。"
+          "你是代码开发监理与指导助手。必须围绕“用户问题-当前证据-可执行动作”回答。禁止空泛回答。若证据不足必须明确写出“证据不足”并指出缺失证据。"
       },
       {
         role: "user",
@@ -590,6 +746,8 @@ async function answerDeepSeek(prompt: string, state: AppState, apiKey: string): 
             .slice(0, 10)
             .map((s, i) => `${i + 1}. ${s.done ? "[已完成]" : "[未完成]"} ${s.text}`)
             .join("\n") || "(暂无计划)",
+          "",
+          chatEvidenceBlock(evidence),
           "",
           "请你基于以上信息，用 4~7 条要点说明：",
           "1）当前实现与目标/计划的偏差（必须引用上面的信号，不要猜）；",

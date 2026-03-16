@@ -37,7 +37,7 @@ export async function buildProjectEvidence(state: AppState): Promise<string> {
 
   const include = "**/*.{ts,tsx,js,jsx,json,md,yml,yaml}";
   const exclude = "**/{node_modules,dist,.git,out,.next,coverage}/**";
-  const uris = await vscode.workspace.findFiles(include, exclude, 24);
+  const uris = await vscode.workspace.findFiles(include, exclude, 60);
   const sections: string[] = [];
 
   const recentUris: vscode.Uri[] = [];
@@ -46,20 +46,25 @@ export async function buildProjectEvidence(state: AppState): Promise<string> {
     recentUris.push(uri);
   }
 
-  const merged = [...recentUris, ...uris].slice(0, 24);
+  const merged = [...recentUris, ...uris].slice(0, 40);
   for (const uri of merged) {
     const rel = vscode.workspace.asRelativePath(uri);
     if (relSeen.has(`seen:${rel}`)) continue;
     relSeen.add(`seen:${rel}`);
-    const txt = await readFileSafe(uri, 1800);
+    const txt = await readFileSafe(uri, 2200);
     if (!txt?.trim()) continue;
     sections.push(`FILE: ${rel}\n${txt}`);
-    if (sections.length >= 14) break;
+    if (sections.length >= 20) break;
   }
 
   const planPreview = state.plan
-    .slice(0, 12)
-    .map((p, i) => `${i + 1}. ${p.done ? "[done]" : "[todo]"} ${p.text}`)
+    .slice(0, 40)
+    .map((p, i) => `${i + 1}. [${p.group || "Ungrouped"}] ${p.done ? "[done]" : "[todo]"} ${p.text}`)
+    .join("\n");
+  const fileInventory = uris.slice(0, 120).map((u) => vscode.workspace.asRelativePath(u)).join("\n");
+  const recentEvents = state.timeline
+    .slice(0, 16)
+    .map((e) => `${new Date(e.ts).toISOString()} | ${e.type} | ${e.summary}`)
     .join("\n");
 
   return [
@@ -70,6 +75,12 @@ export async function buildProjectEvidence(state: AppState): Promise<string> {
     `BUILD: ${state.validity.state}`,
     "PLAN:",
     planPreview || "(none)",
+    "",
+    "RECENT EVENTS:",
+    recentEvents || "(none)",
+    "",
+    "FILE INVENTORY:",
+    fileInventory || "(none)",
     "",
     "CODE SNAPSHOTS:",
     sections.join("\n\n---\n\n") || "(no readable source files)"

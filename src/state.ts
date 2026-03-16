@@ -1,4 +1,17 @@
-import type { AppState, ChatMessage, DeviationSummary, DiagnosticsSummary, GoalSummary, MonitorAlert, PlanStep, ProjectAssessment, TimelineEvent, ValidityStatus } from "./types";
+import type {
+  AppState,
+  ChatMessage,
+  DeviationSummary,
+  DiagnosticsSummary,
+  GoalSummary,
+  LlmRefreshStatus,
+  MonitorAlert,
+  MonitorRuntime,
+  PlanStep,
+  ProjectAssessment,
+  TimelineEvent,
+  ValidityStatus
+} from "./types";
 
 function uid(prefix: string) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -29,6 +42,17 @@ export class StateStore {
         level: "warn",
         reasons: ["Goal baseline missing."],
         nextActions: ["Import goal from conversation export or set manually."]
+      },
+      monitorRuntime: {
+        engaged: false,
+        handling: false,
+        realtime: false,
+        state: "not_started",
+        detail: "Goal baseline missing."
+      },
+      llmRefresh: {
+        state: "idle",
+        updatedAt: Date.now()
       },
       assessment: {
         source: "heuristic",
@@ -109,15 +133,16 @@ export class StateStore {
     return cleaned.length;
   }
 
-  setPlan(steps: Array<{ text: string; done?: boolean }>) {
+  setPlan(steps: Array<{ text: string; done?: boolean; group?: string }>) {
     const cleaned = steps
-      .map((s) => ({ text: (s.text || "").trim(), done: Boolean(s.done) }))
+      .map((s) => ({ text: (s.text || "").trim(), done: Boolean(s.done), group: (s.group || "").trim() || undefined }))
       .filter((s) => s.text.length > 0);
     this.state.plan = cleaned.map((s) => ({
       id: uid("plan"),
       ts: Date.now(),
       text: s.text,
-      done: s.done
+      done: s.done,
+      group: s.group
     }));
     this.recomputeDeviation();
     this.emit();
@@ -157,8 +182,35 @@ export class StateStore {
     return changed;
   }
 
+  syncPlanDoneByTexts(texts: string[]) {
+    const wanted = new Set(texts.map((t) => t.trim().toLowerCase()).filter(Boolean));
+    let changed = 0;
+    for (const step of this.state.plan) {
+      const shouldDone = wanted.has(step.text.trim().toLowerCase());
+      if (step.done !== shouldDone) {
+        step.done = shouldDone;
+        changed++;
+      }
+    }
+    if (changed > 0) {
+      this.recomputeDeviation();
+      this.emit();
+    }
+    return changed;
+  }
+
   setDeviation(d: DeviationSummary) {
     this.state.deviation = d;
+    this.emit();
+  }
+
+  setLlmRefresh(next: Partial<LlmRefreshStatus> & Pick<LlmRefreshStatus, "state">) {
+    this.state.llmRefresh = {
+      ...this.state.llmRefresh,
+      note: "",
+      ...next,
+      updatedAt: Date.now()
+    };
     this.emit();
   }
 
@@ -172,13 +224,54 @@ export class StateStore {
       score01: next.deviationScore01,
       rationale: next.deviationRationale
     };
-    this.state.monitor = {
+    const nextMonitor: MonitorAlert = {
       loopRisk: next.level !== "ok" && next.alerts.some((x) => /loop|兜圈|空对空/i.test(x)),
       level: next.level,
       reasons: [...new Set(next.alerts)].slice(0, 6),
       nextActions: [...new Set(next.nextActions)].slice(0, 6)
     };
+    this.state.monitorRuntime = this.computeMonitorRuntime();
+    this.state.monitor = this.reconcileMonitorAlert(nextMonitor, this.state.monitorRuntime);
     this.emit();
+  }
+
+  private reconcileMonitorAlert(alert: MonitorAlert, runtime: MonitorRuntime): MonitorAlert {
+    const hasGoal = this.state.goal.source !== "none" && this.state.goal.summary.trim().length > 0;
+    const hasPlan = this.state.plan.length > 0;
+    const reasons = [...alert.reasons];
+    const nextActions = [...alert.nextActions];
+
+    const dropPatterns: RegExp[] = [];
+    if (hasGoal) dropPatterns.push(/goal baseline missing|原始目标基线缺失|缺少目标基线/i);
+    if (hasPlan) dropPatterns.push(/no executable plan baseline|缺少可执行计划|没有可执行的计划基线/i);
+    const filteredReasons = reasons.filter((r) => !dropPatterns.some((p) => p.test(r)));
+
+    if (!hasGoal && !filteredReasons.some((r) => /goal baseline missing|目标基线/i.test(r))) {
+      filteredReasons.unshift("Goal baseline missing.");
+      nextActions.unshift("Import goal baseline from goal.md or clipboard.");
+    }
+    if (!hasPlan && !filteredReasons.some((r) => /plan baseline|执行计划|计划基线/i.test(r))) {
+      filteredReasons.unshift("No executable plan baseline.");
+      nextActions.unshift("Import plan baseline from plan.md.");
+    }
+
+    if (runtime.state === "active" && filteredReasons.length === 0) {
+      filteredReasons.push("Development signals look healthy.");
+    }
+    if (runtime.state === "lagging" && !filteredReasons.some((r) => /lagging|滞后/i.test(r))) {
+      filteredReasons.push("Monitoring feedback is lagging behind recent development signals.");
+      nextActions.unshift("Use Force refresh to sync latest evidence.");
+    }
+
+    const levelFromRuntime: MonitorAlert["level"] =
+      runtime.state === "blocked" ? "critical" : runtime.state === "lagging" ? "warn" : alert.level;
+
+    return {
+      loopRisk: alert.loopRisk,
+      level: levelFromRuntime,
+      reasons: [...new Set(filteredReasons)].slice(0, 6),
+      nextActions: [...new Set(nextActions)].slice(0, 6)
+    };
   }
 
   addChat(role: ChatMessage["role"], text: string) {
@@ -205,7 +298,8 @@ export class StateStore {
     if (this.state.validity.state === "failed") score -= 0.3;
     if (this.state.validity.state === "running") score -= 0.05;
 
-    const monitor = this.computeMonitorAlerts();
+    const monitorRuntime = this.computeMonitorRuntime();
+    const monitor = this.computeMonitorAlerts(monitorRuntime);
     if (monitor.level === "warn") score -= 0.08;
     if (monitor.level === "critical") score -= 0.18;
 
@@ -216,15 +310,16 @@ export class StateStore {
       `Plan: ${doneCount}/${this.state.plan.length} done`,
       `Diagnostics: ${errors} errors, ${warnings} warnings`,
       `Build: ${this.state.validity.state}`,
-      `Monitor: ${monitor.level}${monitor.loopRisk ? " (loop risk)" : ""}`
+      `Monitor: ${monitor.level}${monitor.loopRisk ? " (loop risk)" : ""} / ${monitorRuntime.state}`
     ];
     const rationale = rationaleParts.join(" | ");
     this.state.deviation = { score01: score, rationale };
     this.state.monitor = monitor;
+    this.state.monitorRuntime = monitorRuntime;
     this.state.assessment = {
       source: "heuristic",
       updatedAt: Date.now(),
-      progress: `Plan completion ${doneCount}/${this.state.plan.length}; diagnostics ${errors} error(s), ${warnings} warning(s); build ${this.state.validity.state}.`,
+      progress: `Plan completion ${doneCount}/${this.state.plan.length}; diagnostics ${errors} error(s), ${warnings} warning(s); build ${this.state.validity.state}; monitor ${monitorRuntime.state}.`,
       deviationScore01: score,
       deviationRationale: rationale,
       level: monitor.level,
@@ -234,7 +329,56 @@ export class StateStore {
     };
   }
 
-  private computeMonitorAlerts(): MonitorAlert {
+  private computeMonitorRuntime(): MonitorRuntime {
+    const now = Date.now();
+    const hasGoal = this.state.goal.source !== "none" && this.state.goal.summary.trim().length > 0;
+    const hasPlan = this.state.plan.length > 0;
+    const engaged = hasGoal && hasPlan;
+    const latestEdit = this.state.timeline.find((t) => t.type === "document/changed" || t.type === "document/saved");
+    const latestAssessment = this.state.timeline.find((t) => t.type === "analysis/updated");
+    const blocked = this.state.diagnostics.errors > 0 || this.state.validity.state === "failed";
+    const handling = this.state.validity.state === "running" || Boolean(latestAssessment && now - latestAssessment.ts <= 3 * 60 * 1000);
+    const realtime = latestEdit
+      ? Boolean(latestAssessment && latestAssessment.ts >= latestEdit.ts && latestAssessment.ts - latestEdit.ts <= 60 * 1000)
+      : handling;
+
+    if (!hasGoal) {
+      return {
+        engaged: false,
+        handling,
+        realtime: false,
+        state: "not_started",
+        detail: "Goal baseline missing."
+      };
+    }
+    if (blocked) {
+      return {
+        engaged,
+        handling,
+        realtime,
+        state: "blocked",
+        detail: "Blocked by diagnostics/build failure."
+      };
+    }
+    if (engaged && handling && realtime) {
+      return {
+        engaged: true,
+        handling: true,
+        realtime: true,
+        state: "active",
+        detail: "Monitoring fully engaged with real-time feedback."
+      };
+    }
+    return {
+      engaged,
+      handling,
+      realtime,
+      state: "lagging",
+      detail: "Monitoring partially engaged; feedback is lagging."
+    };
+  }
+
+  private computeMonitorAlerts(runtime: MonitorRuntime): MonitorAlert {
     const reasons: string[] = [];
     const nextActions: string[] = [];
     let level: MonitorAlert["level"] = "ok";
@@ -263,6 +407,20 @@ export class StateStore {
       level = "critical";
       reasons.push("Latest build validity check failed.");
       nextActions.push("Address build failure tail and rerun check.");
+    }
+    if (runtime.state === "lagging") {
+      level = level === "critical" ? "critical" : "warn";
+      reasons.push("Monitoring feedback is lagging behind recent development signals.");
+      nextActions.push("Save current files or run self-check to force evidence refresh.");
+    }
+    if (this.state.plan.length > 0) {
+      const doneCount = this.state.plan.filter((p) => p.done).length;
+      const hasRecentEdits = Boolean(latestEdit && Date.now() - latestEdit.ts < 30 * 60 * 1000);
+      if (doneCount === 0 && hasRecentEdits) {
+        level = level === "critical" ? "critical" : "warn";
+        reasons.push("Plan progress is 0 but recent code edits exist; mapping evidence may be insufficient.");
+        nextActions.push("Run self-check and validate plan-to-code mapping evidence in timeline.");
+      }
     }
 
     if (latestUserChat && latestAssistantChat) {

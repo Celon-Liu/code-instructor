@@ -22,7 +22,7 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
     while (this.disposables.length) this.disposables.pop()?.dispose();
   }
 
-  resolveWebviewView(webviewView: vscode.WebviewView): void | Thenable<void> {s
+  resolveWebviewView(webviewView: vscode.WebviewView): void | Thenable<void> {
     this.view = webviewView;
     const webview = webviewView.webview;
 
@@ -54,6 +54,9 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
           }
           if (m.type === "command/openBuildDetail") {
             await vscode.commands.executeCommand("aiDevCoach.openBuildDetail");
+          }
+          if (m.type === "command/forceRefreshAssessment") {
+            await vscode.commands.executeCommand("aiDevCoach.forceRefreshAssessment");
           }
           if (m.type === "command/generatePlanFromGoal") {
             await vscode.commands.executeCommand("aiDevCoach.generatePlanFromGoal");
@@ -102,6 +105,13 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
 
     const i18n = {
       header: zh ? "Code Instructor" : "AI Dev Supervision Board v1",
+      llmRefresh: zh ? "LLM 刷新" : "LLM refresh",
+      llmIdle: zh ? "空闲" : "idle",
+      llmLoading: zh ? "更新中..." : "loading...",
+      llmDone: zh ? "已完成" : "done",
+      llmError: zh ? "异常" : "error",
+      forceRefresh: zh ? "强制刷新" : "Force refresh",
+      forceRefreshing: zh ? "刷新中..." : "Refreshing...",
       snapshot: zh ? "监控快照" : "Monitoring Snapshot",
       status: zh ? "监控状态" : "Monitoring Status",
       conclusion: zh ? "当前结论" : "Current Conclusion",
@@ -109,6 +119,7 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
       statusNotStarted: zh ? "未开始监控" : "Not started",
       statusRunning: zh ? "监控进行中" : "Monitoring",
       statusBlocked: zh ? "当前阻塞" : "Blocked",
+      statusLagging: zh ? "反馈滞后" : "Lagging feedback",
       msgGoalMissing: zh ? "缺少目标基线。" : "Goal baseline missing.",
       msgPlanMissing: zh ? "已设置目标，但缺少可执行计划。" : "Goal is set but executable plan is missing.",
       msgBuildBlocked: zh ? "监控已开启，但构建校验失败，当前阻塞。" : "Monitoring active, but currently blocked by failed build check.",
@@ -133,8 +144,9 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
       monitor: zh ? "监理告警" : "Monitor Alerts",
       selfCheck: zh ? "运行自检" : "Run self-check",
       plan: zh ? "执行计划" : "Execution Plan",
-      planHelp: zh ? "计划状态由 LLM 基于代码证据自动判定。" : "Plan completion is auto-evaluated by LLM from code evidence.",
+      planHelp: zh ? "计划状态由 LLM 基于代码证据实时判定并刷新。" : "Plan completion is auto-evaluated and refreshed by LLM from code evidence.",
       noPlanYet: zh ? "暂无计划步骤（导入目标时会读取 plan.md）。" : "No plan steps yet (plan.md is loaded when importing goal baseline).",
+      groupDefault: zh ? "未分组" : "Ungrouped",
       chat: zh ? "代码指导员" : "Code Coach",
       chatPlaceholder: zh ? "问：现在偏离点是什么？下一步具体改哪？" : "Ask: what is off-track now? what exact next action?",
       send: zh ? "发送" : "Send",
@@ -154,7 +166,13 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
       signalErrors: zh ? "错误数" : "Errors",
       signalBuild: zh ? "构建状态" : "Build",
       signalAlerts: zh ? "告警条数" : "Alerts",
-      signalClickHint: zh ? "点击可跳转" : "Click to jump"
+      signalClickHint: zh ? "点击可跳转" : "Click to jump",
+      runtime: zh ? "监控运行态" : "Monitor Runtime",
+      runtimeEngaged: zh ? "介入" : "Engaged",
+      runtimeHandling: zh ? "处理中" : "Handling",
+      runtimeRealtime: zh ? "实时反馈" : "Realtime",
+      yes: zh ? "是" : "Yes",
+      no: zh ? "否" : "No"
     };
 
     return /* html */ `<!doctype html>
@@ -240,6 +258,20 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
       .signalCard:hover { background: var(--hover); }
       .signalV { margin-top: 3px; font-weight: 700; }
       .signalHint { margin-top: 3px; color: var(--muted); font-size: 11px; }
+      .runtimeGrid {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 6px;
+        margin-top: 6px;
+      }
+      .runtimeItem {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #fff;
+        padding: 6px 8px;
+      }
+      .runtimeLabel { font-size: 11px; color: var(--muted); }
+      .runtimeVal { margin-top: 2px; font-weight: 700; }
       .result {
         border: 1px solid var(--border);
         background: #fff;
@@ -288,6 +320,25 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
         border-radius: 8px;
         padding: 7px 8px;
         background: #fff;
+      }
+      .planGroup {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #fff;
+        overflow: hidden;
+      }
+      .planGroupSummary {
+        cursor: pointer;
+        padding: 7px 10px;
+        background: var(--panel2);
+        font-weight: 700;
+        border-bottom: 1px solid var(--border);
+      }
+      .planGroupBody {
+        padding: 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
       }
       .planEntryRow { display: flex; align-items: flex-start; gap: 8px; }
       .planIconTodo { color: var(--muted); }
@@ -384,11 +435,15 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
     </div>
 
     <div class="section" id="monitorSection">
-      <div class="hd">${i18n.snapshot}</div>
+      <div class="hd row space">
+        <span>${i18n.snapshot}</span>
+        <button id="btnForceRefresh">${i18n.forceRefresh}</button>
+      </div>
       <div class="bd grid4">
         <div class="result">
           <div class="k">${i18n.status}</div>
           <div class="v state-warn" id="summaryStatus">${i18n.statusNotStarted}</div>
+          <div class="small" id="summaryStatusMeta">—</div>
         </div>
         <div class="result">
           <div class="k">${i18n.progress}</div>
@@ -401,6 +456,24 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
         <div class="result">
           <div class="k">${i18n.validity}</div>
           <div class="v" id="summaryValidity">—</div>
+        </div>
+        <div class="result" style="grid-column: 1 / -1;">
+          <div class="k">${i18n.runtime}</div>
+          <div class="runtimeGrid">
+            <div class="runtimeItem">
+              <div class="runtimeLabel">${i18n.runtimeEngaged}</div>
+              <div class="runtimeVal" id="runtimeEngagedVal">${i18n.no}</div>
+            </div>
+            <div class="runtimeItem">
+              <div class="runtimeLabel">${i18n.runtimeHandling}</div>
+              <div class="runtimeVal" id="runtimeHandlingVal">${i18n.no}</div>
+            </div>
+            <div class="runtimeItem">
+              <div class="runtimeLabel">${i18n.runtimeRealtime}</div>
+              <div class="runtimeVal" id="runtimeRealtimeVal">${i18n.no}</div>
+            </div>
+          </div>
+          <div class="small" id="runtimeDetail">—</div>
         </div>
       </div>
     </div>

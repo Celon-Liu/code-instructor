@@ -2,7 +2,7 @@
   "name": "ai-dev-progress-coach",
   "displayName": "AI Dev Progress Coach",
   "description": "Real-time development progress, goal deviation, and code validity checks for AI-assisted coding.",
-  "version": "0.1.28",
+  "version": "0.1.29",
   "publisher": "local",
   "private": true,
   "engines": {
