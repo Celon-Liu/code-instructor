@@ -1,0 +1,28 @@
+{
+  "command.openSidebar.title": "AI Dev Coach: Open Sidebar",
+  "command.addPlanStep.title": "AI Dev Coach: Add Plan Step",
+  "command.ingestPlanFromClipboard.title": "AI Dev Coach: Import Plan Steps From Clipboard",
+  "command.setGoalFromClipboard.title": "AI Dev Coach: Set Goal Baseline From Clipboard",
+  "command.generatePlanFromGoal.title": "AI Dev Coach: Generate Plan From Goal",
+  "command.importWorkspaceBaselines.title": "AI Dev Coach: Import Baseline From goal.md/plan.md",
+  "command.inspectHostCommands.title": "AI Dev Coach: Inspect Host Commands (Cursor/AI)",
+  "command.connectCursorChatStorage.title": "AI Dev Coach: Connect Cursor Chat Storage (experimental)",
+  "command.connectTraeSessionExport.title": "AI Dev Coach: Connect Trae Session Export (recommended)",
+  "command.runValidityCheck.title": "AI Dev Coach: Run Validity Check",
+  "command.runSelfCheck.title": "AI Dev Coach: Run v1 Self-check",
+  "viewContainer.title": "AI Dev Coach",
+  "view.progress.name": "Progress",
+  "config.title": "AI Dev Coach",
+  "config.cloud.enabled.desc": "Allow cloud LLM calls (may send code snippets depending on provider configuration).",
+  "config.cloud.provider.desc": "Cloud provider used for goal deviation scoring and Q&A.",
+  "config.cloud.apiKey.desc": "API key for the configured cloud provider.",
+  "config.validity.buildCommand.desc": "Command used to validate code (build/compile). Leave empty to auto-infer from package scripts.",
+  "config.validity.testCommand.desc": "Optional test command. If empty, the extension will try to infer from package scripts (test/test:ci/test:unit).",
+  "config.validity.runTestAfterBuild.desc": "If enabled, automatically run test command after a successful build check.",
+  "config.validity.cwd.desc": "Working directory for validity commands. Empty means workspace root.",
+  "config.ingest.planFilePath.desc": "Optional: absolute path to a plan file (e.g. plan.md). When it changes, plan steps will be imported automatically.",
+  "config.ingest.cursorChatStorageDir.desc": "Experimental: a directory to scan (and watch) for Cursor chat storage. The extension will attempt to extract plan-like steps from stored conversations.",
+  "config.ingest.traeSessionExportPath.desc": "Recommended (Trae): a file or folder path where Trae exports the current chat session. The extension will watch it and import plan steps automatically.",
+  "config.telemetry.maxEvents.desc": "Max events kept in memory for progress timeline."
+}
+

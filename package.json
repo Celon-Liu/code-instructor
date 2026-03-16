@@ -1,0 +1,159 @@
+{
+  "name": "ai-dev-progress-coach",
+  "displayName": "AI Dev Progress Coach",
+  "description": "Real-time development progress, goal deviation, and code validity checks for AI-assisted coding.",
+  "version": "0.1.28",
+  "publisher": "local",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "aiDevCoach.openSidebar",
+        "title": "%command.openSidebar.title%"
+      },
+      {
+        "command": "aiDevCoach.addPlanStep",
+        "title": "%command.addPlanStep.title%"
+      },
+      {
+        "command": "aiDevCoach.ingestPlanFromClipboard",
+        "title": "%command.ingestPlanFromClipboard.title%"
+      },
+      {
+        "command": "aiDevCoach.setGoalFromClipboard",
+        "title": "%command.setGoalFromClipboard.title%"
+      },
+      {
+        "command": "aiDevCoach.generatePlanFromGoal",
+        "title": "%command.generatePlanFromGoal.title%"
+      },
+      {
+        "command": "aiDevCoach.importWorkspaceBaselines",
+        "title": "%command.importWorkspaceBaselines.title%"
+      },
+      {
+        "command": "aiDevCoach.inspectHostCommands",
+        "title": "%command.inspectHostCommands.title%"
+      },
+      {
+        "command": "aiDevCoach.connectCursorChatStorage",
+        "title": "%command.connectCursorChatStorage.title%"
+      },
+      {
+        "command": "aiDevCoach.connectTraeSessionExport",
+        "title": "%command.connectTraeSessionExport.title%"
+      },
+      {
+        "command": "aiDevCoach.runValidityCheck",
+        "title": "%command.runValidityCheck.title%"
+      },
+      {
+        "command": "aiDevCoach.runSelfCheck",
+        "title": "%command.runSelfCheck.title%"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "aiDevCoach",
+          "title": "%viewContainer.title%",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "aiDevCoach": [
+        {
+          "id": "aiDevCoach.sidebar",
+          "name": "%view.progress.name%",
+          "type": "webview",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "%config.title%",
+      "properties": {
+        "aiDevCoach.cloud.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "%config.cloud.enabled.desc%"
+        },
+        "aiDevCoach.cloud.provider": {
+          "type": "string",
+          "default": "deepseek",
+          "enum": ["deepseek", "openai", "anthropic", "custom"],
+          "description": "%config.cloud.provider.desc%"
+        },
+        "aiDevCoach.cloud.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "%config.cloud.apiKey.desc%"
+        },
+        "aiDevCoach.validity.buildCommand": {
+          "type": "string",
+          "default": "",
+          "description": "%config.validity.buildCommand.desc%"
+        },
+        "aiDevCoach.validity.testCommand": {
+          "type": "string",
+          "default": "",
+          "description": "%config.validity.testCommand.desc%"
+        },
+        "aiDevCoach.validity.runTestAfterBuild": {
+          "type": "boolean",
+          "default": false,
+          "description": "%config.validity.runTestAfterBuild.desc%"
+        },
+        "aiDevCoach.validity.cwd": {
+          "type": "string",
+          "default": "",
+          "description": "%config.validity.cwd.desc%"
+        },
+        "aiDevCoach.ingest.planFilePath": {
+          "type": "string",
+          "default": "",
+          "description": "%config.ingest.planFilePath.desc%"
+        },
+        "aiDevCoach.ingest.cursorChatStorageDir": {
+          "type": "string",
+          "default": "",
+          "description": "%config.ingest.cursorChatStorageDir.desc%"
+        },
+        "aiDevCoach.ingest.traeSessionExportPath": {
+          "type": "string",
+          "default": "",
+          "description": "%config.ingest.traeSessionExportPath.desc%"
+        },
+        "aiDevCoach.telemetry.maxEvents": {
+          "type": "number",
+          "default": 500,
+          "description": "%config.telemetry.maxEvents.desc%"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "lint": "eslint .",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^2.26.1",
+    "eslint": "^9.9.0",
+    "typescript": "^5.6.3"
+  }
+}
