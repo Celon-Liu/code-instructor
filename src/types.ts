@@ -32,7 +32,9 @@ export type PlanStep = {
   ts: number;
   text: string;
   done: boolean;
+  superseded?: boolean;
   group?: string;
+  evidencePaths?: string[];
 };
 
 export type ValidityStatus =

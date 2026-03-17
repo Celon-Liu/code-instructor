@@ -12,15 +12,24 @@ function getConfig() {
   };
 }
 
+function toPlainText(markdownLike: string): string {
+  const raw = (markdownLike || "").replace(/```[\s\S]*?```/g, "").trim();
+  return raw
+    .replace(/^\s{0,3}[-*+]\s+/gm, "")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s{0,3}\d+\.\s+/gm, "")
+    .replace(/\s+$/gm, "");
+}
+
 export async function answerWithOptionalCloud(prompt: string, state: AppState, evidence?: string): Promise<string> {
   const { enabled, provider, apiKey } = getConfig();
   if (!enabled) return localAnswer(prompt, state);
-  if (!apiKey) return "Cloud is enabled but no API key is configured (`aiDevCoach.cloud.apiKey`).";
+  if (!apiKey) return "Cloud is enabled but no API key is configured (aiDevCoach.cloud.apiKey).";
 
   try {
-    if (provider === "openai") return await answerOpenAI(prompt, state, apiKey, evidence);
-    if (provider === "anthropic") return await answerAnthropic(prompt, state, apiKey, evidence);
-    if (provider === "deepseek") return await answerDeepSeek(prompt, state, apiKey, evidence);
+    if (provider === "openai") return toPlainText(await answerOpenAI(prompt, state, apiKey, evidence));
+    if (provider === "anthropic") return toPlainText(await answerAnthropic(prompt, state, apiKey, evidence));
+    if (provider === "deepseek") return toPlainText(await answerDeepSeek(prompt, state, apiKey, evidence));
     return "Custom provider is selected but not implemented yet.";
   } catch (e: unknown) {
     return `Cloud request failed: ${String((e as Error)?.message ?? e)}`;
@@ -260,6 +269,7 @@ export async function calibratePlanItemsWithOptionalCloud(
 export type PlanCompletionInference = {
   available: boolean;
   completed: string[];
+  superseded: string[];
   reason?: "ok" | "disabled" | "no-plan" | "provider-not-supported" | "request-failed";
 };
 
@@ -268,23 +278,25 @@ export async function inferCompletedPlanTextsWithOptionalCloud(
   evidence: string
 ): Promise<PlanCompletionInference> {
   const plans = state.plan.map((p) => p.text.trim()).filter(Boolean);
-  if (plans.length === 0) return { available: false, completed: [], reason: "no-plan" };
+  if (plans.length === 0) return { available: false, completed: [], superseded: [], reason: "no-plan" };
   const { enabled, provider, apiKey } = getConfig();
-  if (!enabled || !apiKey.trim()) return { available: false, completed: [], reason: "disabled" };
+  if (!enabled || !apiKey.trim()) return { available: false, completed: [], superseded: [], reason: "disabled" };
   try {
-    if (provider === "openai") return { available: true, completed: await inferCompletedWithOpenAI(state, evidence, apiKey), reason: "ok" };
-    if (provider === "anthropic") return { available: true, completed: await inferCompletedWithAnthropic(state, evidence, apiKey), reason: "ok" };
-    if (provider === "deepseek") return { available: true, completed: await inferCompletedWithDeepSeek(state, evidence, apiKey), reason: "ok" };
-    return { available: false, completed: [], reason: "provider-not-supported" };
+    if (provider === "openai") return { available: true, ...(await inferCompletedWithOpenAI(state, evidence, apiKey)), reason: "ok" };
+    if (provider === "anthropic") return { available: true, ...(await inferCompletedWithAnthropic(state, evidence, apiKey)), reason: "ok" };
+    if (provider === "deepseek") return { available: true, ...(await inferCompletedWithDeepSeek(state, evidence, apiKey)), reason: "ok" };
+    return { available: false, completed: [], superseded: [], reason: "provider-not-supported" };
   } catch {
-    return { available: false, completed: [], reason: "request-failed" };
+    return { available: false, completed: [], superseded: [], reason: "request-failed" };
   }
 }
 
-function normalizeCompletedTexts(raw: string, planTexts: string[]): string[] {
+function normalizeCompletedTexts(raw: string, planTexts: string[]): { completed: string[]; superseded: string[] } {
   const jsonText = extractJsonObject(raw) ?? raw.trim();
   let parsedList: string[] = [];
   let parsedIndices: number[] = [];
+  let parsedSuperseded: string[] = [];
+  let parsedSupersededIndices: number[] = [];
   const normalizeForMatch = (s: string) =>
     s
       .toLowerCase()
@@ -294,39 +306,72 @@ function normalizeCompletedTexts(raw: string, planTexts: string[]): string[] {
       .trim();
 
   try {
-    const obj = JSON.parse(jsonText) as Partial<{ completed: string[]; completedIndices: number[] }>;
+    const obj = JSON.parse(jsonText) as Partial<{
+      completed: string[];
+      completedIndices: number[];
+      superseded: string[];
+      supersededIndices: number[];
+    }>;
     if (Array.isArray(obj.completed)) parsedList = obj.completed.map((x) => String(x).trim()).filter(Boolean);
     if (Array.isArray(obj.completedIndices)) {
       parsedIndices = obj.completedIndices
         .map((x) => Number(x))
         .filter((x) => Number.isInteger(x) && x >= 1 && x <= planTexts.length);
     }
+    if (Array.isArray(obj.superseded)) parsedSuperseded = obj.superseded.map((x) => String(x).trim()).filter(Boolean);
+    if (Array.isArray(obj.supersededIndices)) {
+      parsedSupersededIndices = obj.supersededIndices
+        .map((x) => Number(x))
+        .filter((x) => Number.isInteger(x) && x >= 1 && x <= planTexts.length);
+    }
   } catch {
     parsedList = [];
     parsedIndices = [];
+    parsedSuperseded = [];
+    parsedSupersededIndices = [];
   }
-  if (!parsedList.length && !parsedIndices.length) return [];
+  if (!parsedList.length && !parsedIndices.length && !parsedSuperseded.length && !parsedSupersededIndices.length) {
+    return { completed: [], superseded: [] };
+  }
 
-  const out = new Set<string>();
-  for (const idx of parsedIndices) out.add(planTexts[idx - 1] as string);
+  const completedSet = new Set<string>();
+  const supersededSet = new Set<string>();
+  for (const idx of parsedIndices) completedSet.add(planTexts[idx - 1] as string);
+  for (const idx of parsedSupersededIndices) supersededSet.add(planTexts[idx - 1] as string);
 
   const planByNorm = new Map(planTexts.map((x) => [normalizeForMatch(x), x]));
   for (const item of parsedList) {
     const direct = planByNorm.get(normalizeForMatch(item));
     if (direct) {
-      out.add(direct);
+      completedSet.add(direct);
       continue;
     }
     const itemNorm = normalizeForMatch(item);
     if (!itemNorm) continue;
     for (const [norm, original] of planByNorm) {
       if (itemNorm.includes(norm) || norm.includes(itemNorm)) {
-        out.add(original);
+        completedSet.add(original);
         break;
       }
     }
   }
-  return Array.from(out);
+  for (const item of parsedSuperseded) {
+    const direct = planByNorm.get(normalizeForMatch(item));
+    if (direct) {
+      supersededSet.add(direct);
+      continue;
+    }
+    const itemNorm = normalizeForMatch(item);
+    if (!itemNorm) continue;
+    for (const [norm, original] of planByNorm) {
+      if (itemNorm.includes(norm) || norm.includes(itemNorm)) {
+        supersededSet.add(original);
+        break;
+      }
+    }
+  }
+  for (const x of supersededSet) completedSet.delete(x);
+  return { completed: Array.from(completedSet), superseded: Array.from(supersededSet) };
 }
 
 function completedPlanPrompt(state: AppState, evidence: string): string {
@@ -335,8 +380,9 @@ function completedPlanPrompt(state: AppState, evidence: string): string {
     "你是开发进度审计助手。请遍历并比对工作区代码证据，判断哪些计划项已经完成。",
     "要求：仅能从给定计划列表中选择；证据不足则不要猜。",
     "输出必须是 JSON 且仅 JSON。",
-    'JSON schema: {"completedIndices":[1,2], "completed": ["计划原文，可选"]}',
-    "优先返回 completedIndices（从1开始），可同时返回 completed。",
+    'JSON schema: {"completedIndices":[1,2], "completed":["可选"], "supersededIndices":[3], "superseded":["可选"]}',
+    "completed 表示直接完成；superseded 表示该项已被更优实现替代且不应计为偏离。",
+    "优先返回 completedIndices/supersededIndices（从1开始）。",
     "",
     "计划列表：",
     plans,
@@ -346,7 +392,11 @@ function completedPlanPrompt(state: AppState, evidence: string): string {
   ].join("\n");
 }
 
-async function inferCompletedWithOpenAI(state: AppState, evidence: string, apiKey: string): Promise<string[]> {
+async function inferCompletedWithOpenAI(
+  state: AppState,
+  evidence: string,
+  apiKey: string
+): Promise<{ completed: string[]; superseded: string[] }> {
   const body = {
     model: "gpt-4.1-mini",
     messages: [
@@ -360,13 +410,17 @@ async function inferCompletedWithOpenAI(state: AppState, evidence: string, apiKe
     headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
     body: JSON.stringify(body)
   });
-  if (!r.ok) return [];
+  if (!r.ok) return { completed: [], superseded: [] };
   const json = (await r.json()) as { choices?: Array<{ message?: { content?: string } }> };
   const raw = json.choices?.[0]?.message?.content || "";
   return normalizeCompletedTexts(raw, state.plan.map((p) => p.text));
 }
 
-async function inferCompletedWithAnthropic(state: AppState, evidence: string, apiKey: string): Promise<string[]> {
+async function inferCompletedWithAnthropic(
+  state: AppState,
+  evidence: string,
+  apiKey: string
+): Promise<{ completed: string[]; superseded: string[] }> {
   const body = {
     model: "claude-3-5-sonnet-20241022",
     max_tokens: 400,
@@ -381,13 +435,17 @@ async function inferCompletedWithAnthropic(state: AppState, evidence: string, ap
     },
     body: JSON.stringify(body)
   });
-  if (!r.ok) return [];
+  if (!r.ok) return { completed: [], superseded: [] };
   const json = (await r.json()) as { content?: Array<{ type: string; text?: string }> };
   const raw = json.content?.find((c) => c.type === "text")?.text || "";
   return normalizeCompletedTexts(raw, state.plan.map((p) => p.text));
 }
 
-async function inferCompletedWithDeepSeek(state: AppState, evidence: string, apiKey: string): Promise<string[]> {
+async function inferCompletedWithDeepSeek(
+  state: AppState,
+  evidence: string,
+  apiKey: string
+): Promise<{ completed: string[]; superseded: string[] }> {
   const body = {
     model: "deepseek-chat",
     messages: [
@@ -404,7 +462,7 @@ async function inferCompletedWithDeepSeek(state: AppState, evidence: string, api
     headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
     body: JSON.stringify(body)
   });
-  if (!r.ok) return [];
+  if (!r.ok) return { completed: [], superseded: [] };
   const json = (await r.json()) as { choices?: Array<{ message?: { content?: string } }> };
   const raw = json.choices?.[0]?.message?.content || "";
   return normalizeCompletedTexts(raw, state.plan.map((p) => p.text));
@@ -413,7 +471,10 @@ async function inferCompletedWithDeepSeek(state: AppState, evidence: string, api
 function localAnswer(prompt: string, state: AppState): string {
   const p = prompt.toLowerCase();
   const diag = state.diagnostics;
-  const topPlan = state.plan.slice(0, 5).map((s) => `- ${s.done ? "[x]" : "[ ]"} ${s.text}`).join("\n");
+  const topPlan = state.plan
+    .slice(0, 5)
+    .map((s, i) => `${i + 1}) ${s.done ? "[x]" : "[ ]"} ${s.text}`)
+    .join("\n");
   const validity = state.validity.state;
   const goal = state.goal.summary || "No goal baseline.";
 
@@ -421,17 +482,44 @@ function localAnswer(prompt: string, state: AppState): string {
     return `Deviation: ${Math.round(state.deviation.score01 * 100)}%\nReason: ${state.deviation.rationale}\nGoal: ${goal}`;
   }
   if (p.includes("error") || prompt.includes("报错") || prompt.includes("诊断")) {
-    return `Diagnostics summary:\n- errors: ${diag.errors}\n- warnings: ${diag.warnings}\n- info: ${diag.infos}\n- hint: ${diag.hints}\n\nValidity: ${validity}`;
+    return [
+      "Diagnostics summary:",
+      `errors: ${diag.errors}`,
+      `warnings: ${diag.warnings}`,
+      `info: ${diag.infos}`,
+      `hint: ${diag.hints}`,
+      "",
+      `Validity: ${validity}`
+    ].join("\n");
   }
   if (p.includes("next") || prompt.includes("下一步") || prompt.includes("建议")) {
     const suggestions: string[] = [];
     if (diag.errors > 0) suggestions.push("Fix current Errors in Problems panel first (they heavily impact validity/deviation).");
     else if (validity === "failed") suggestions.push("Re-run the build check and inspect build output tail; update build command if needed.");
     else suggestions.push("Add/complete plan steps, then run validity check after each meaningful change.");
-    return `Next steps:\n${suggestions.map((s) => `- ${s}`).join("\n")}\n\nGoal:\n- ${goal}\n\nTop plan:\n${topPlan || "(no plan steps yet)"}`;
+    const lines: string[] = [];
+    lines.push("Next steps:");
+    suggestions.forEach((s, idx) => {
+      lines.push(`${idx + 1}) ${s}`);
+    });
+    lines.push("");
+    lines.push("Goal:");
+    lines.push(goal);
+    lines.push("");
+    lines.push("Top plan:");
+    lines.push(topPlan || "(no plan steps yet)");
+    return lines.join("\n");
   }
 
-  return `Current status:\n- goal: ${goal}\n- deviation: ${Math.round(state.deviation.score01 * 100)}% (${state.deviation.rationale})\n- diagnostics: ${diag.errors} errors, ${diag.warnings} warnings\n- validity: ${validity}\n\nAsk me about "errors", "deviation", or "next steps".`;
+  return [
+    "Current status:",
+    `goal: ${goal}`,
+    `deviation: ${Math.round(state.deviation.score01 * 100)}% (${state.deviation.rationale})`,
+    `diagnostics: ${diag.errors} errors, ${diag.warnings} warnings`,
+    `validity: ${validity}`,
+    "",
+    'Ask me about "errors", "deviation", or "next steps".'
+  ].join("\n");
 }
 
 function clamp01(x: number) {
@@ -626,7 +714,14 @@ async function answerOpenAI(prompt: string, state: AppState, apiKey: string, evi
       {
         role: "system",
         content:
-          "You are a VS Code engineering coach. Answer only from provided project signals and evidence. If evidence is insufficient, explicitly say so and request the exact missing artifact."
+          [
+            "You are a VS Code engineering coach.",
+            "Answer only from provided project signals and evidence.",
+            "If evidence is insufficient, explicitly say so and request the exact missing artifact.",
+            "Do not assume that TODO items in plan text mean code is unimplemented; prefer concrete code snapshots and recent events.",
+            "Never claim something is definitely unimplemented unless you clearly see no relevant files/functions in the FILE INVENTORY and CODE SNAPSHOTS.",
+            "Output plain text only (no markdown, no bullet markers like '-' or '*', no numbered markdown lists)."
+          ].join(" ")
       },
       {
         role: "user",
@@ -635,8 +730,9 @@ async function answerOpenAI(prompt: string, state: AppState, apiKey: string, evi
           prompt,
           "",
           "Current signals:",
-          `- goal: ${state.goal.title} | ${state.goal.summary}`,
-          `- deviation: ${Math.round(state.deviation.score01 * 100)}% (${state.deviation.rationale})`,
+          `- goal: ${state.goal.title} | ${state.goal.summary} (source: ${state.goal.source || "none"})`,
+          `- plan progress: ${state.plan.length > 0 ? Math.round(((state.plan.filter((p) => p.done).length + state.plan.filter((p) => p.superseded).length) / state.plan.length) * 100) : 0}% (done+superseded/total, raw plan completion)`,
+          `- deviation: ${Math.round(state.deviation.score01 * 100)}% (composite score, not plan completion; ${state.deviation.rationale})`,
           `- diagnostics: ${state.diagnostics.errors} errors, ${state.diagnostics.warnings} warnings`,
           `- validity: ${state.validity.state}`,
           `- monitor: ${state.monitor.level} | ${state.monitor.reasons.join(" / ")}`,
@@ -648,6 +744,7 @@ async function answerOpenAI(prompt: string, state: AppState, apiKey: string, evi
           "1) Always reference at least 2 concrete signals/evidence points.",
           "2) Give 2-4 specific next coding actions (file/module oriented when possible).",
           "3) No generic motivation text.",
+          "4) If plan text and code evidence conflict, trust the current code and runtime signals more than the original plan.md.",
           ""
         ].join("\n")
       }
@@ -681,13 +778,19 @@ async function answerAnthropic(prompt: string, state: AppState, apiKey: string, 
         role: "user",
         content: [
           "You are a VS Code assistant focused on development progress, goal deviation, and code validity.",
+          "Answer only from provided project signals and evidence.",
+          "If evidence is insufficient, explicitly say so and request the exact missing artifact.",
+          "Do not assume that TODO items in plan text mean code is unimplemented; prefer concrete code snapshots and recent events.",
+          "Never claim something is definitely unimplemented unless you clearly see no relevant files/functions in the FILE INVENTORY and CODE SNAPSHOTS.",
+          "Output plain text only (no markdown, no bullet markers like '-' or '*', no numbered markdown lists).",
           "",
           "User question:",
           prompt,
           "",
           "Current signals:",
-          `Goal: ${state.goal.title} | ${state.goal.summary}`,
-          `Deviation: ${Math.round(state.deviation.score01 * 100)}% (${state.deviation.rationale})`,
+          `Goal: ${state.goal.title} | ${state.goal.summary} (source: ${state.goal.source || "none"})`,
+          `Plan progress: ${state.plan.length > 0 ? Math.round(((state.plan.filter((p) => p.done).length + state.plan.filter((p) => p.superseded).length) / state.plan.length) * 100) : 0}% (done+superseded/total)`,
+          `Deviation: ${Math.round(state.deviation.score01 * 100)}% (composite, not plan completion; ${state.deviation.rationale})`,
           `Diagnostics: ${state.diagnostics.errors} errors, ${state.diagnostics.warnings} warnings`,
           `Validity: ${state.validity.state}`,
           `Monitor: ${state.monitor.level} | ${state.monitor.reasons.join(" / ")}`,
@@ -695,7 +798,8 @@ async function answerAnthropic(prompt: string, state: AppState, apiKey: string, 
           "",
           chatEvidenceBlock(evidence),
           "",
-          "Rules: cite concrete evidence, avoid generic replies, provide actionable next steps."
+          "Rules: cite concrete evidence, avoid generic replies, provide actionable next steps.",
+          "If plan text and code evidence conflict, trust the current code and runtime signals more than the original plan.md."
         ].join("\n")
       }
     ]
@@ -727,7 +831,14 @@ async function answerDeepSeek(prompt: string, state: AppState, apiKey: string, e
       {
         role: "system",
         content:
-          "你是代码开发监理与指导助手。必须围绕“用户问题-当前证据-可执行动作”回答。禁止空泛回答。若证据不足必须明确写出“证据不足”并指出缺失证据。"
+          [
+            "你是代码开发监理与指导助手。",
+            "必须围绕“用户问题-当前证据-可执行动作”回答，禁止空泛回答。",
+            "若证据不足必须明确写出“证据不足”并指出缺失证据。",
+            "不要仅依据 PLAN 文本中的 TODO 字样就断言模块未实现；优先相信 CODE SNAPSHOTS、RECENT EVENTS 和当前运行信号。",
+            "除非在 FILE INVENTORY 和 CODE SNAPSHOTS 中明确看不到相关文件/函数，否则不要用“尚未实现”这类绝对表述，可以说“从当前证据看可能仍在进行中”。",
+            "回答必须是普通多行文本，不能使用 Markdown 语法（不要用 '-'、'*' 作为列表符号，不要用 '**' 加粗）。"
+          ].join(" ")
       },
       {
         role: "user",
@@ -736,8 +847,9 @@ async function answerDeepSeek(prompt: string, state: AppState, apiKey: string, e
           prompt,
           "",
           "当前信号：",
-          `- 目标基线：${state.goal.title} | ${state.goal.summary}`,
-          `- 目标/偏离说明：${Math.round(state.deviation.score01 * 100)}% (${state.deviation.rationale})`,
+          `- 目标基线：${state.goal.title} | ${state.goal.summary}（来源：${state.goal.source || "none"}）`,
+          `- 计划完成率：${state.plan.length > 0 ? Math.round(((state.plan.filter((p) => p.done).length + state.plan.filter((p) => p.superseded).length) / state.plan.length) * 100) : 0}%（done+superseded/total，纯计划完成度）`,
+          `- 偏离度：${Math.round(state.deviation.score01 * 100)}%（综合评分，非计划完成率；${state.deviation.rationale}）`,
           `- 诊断：${state.diagnostics.errors} errors, ${state.diagnostics.warnings} warnings, ${state.diagnostics.infos} info, ${state.diagnostics.hints} hints`,
           `- 有效性（构建）：${state.validity.state}`,
           `- 监理告警：${state.monitor.level} | ${state.monitor.reasons.join(" / ")}`,
@@ -750,7 +862,7 @@ async function answerDeepSeek(prompt: string, state: AppState, apiKey: string, e
           chatEvidenceBlock(evidence),
           "",
           "请你基于以上信息，用 4~7 条要点说明：",
-          "1）当前实现与目标/计划的偏差（必须引用上面的信号，不要猜）；",
+          "1）当前实现与目标/计划的偏差（必须引用上面的信号，不要猜；PLAN 文本与代码/事件冲突时，以代码和运行信号为准）；",
           "2）若存在 AI 兜圈子/无效推进风险，要明确指出并给出反制动作；",
           "3）给出接下来 2~4 个具体行动（例如修哪个错误、补哪一步实现、补哪种测试），每条都尽量指向可执行的 IDE / 代码操作。",
           "4）若关键证据不足，明确写出还缺什么证据。"

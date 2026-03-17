@@ -133,20 +133,79 @@ export class StateStore {
     return cleaned.length;
   }
 
-  setPlan(steps: Array<{ text: string; done?: boolean; group?: string }>) {
+  setPlan(steps: Array<{ text: string; done?: boolean; group?: string; evidencePaths?: string[] }>) {
     const cleaned = steps
-      .map((s) => ({ text: (s.text || "").trim(), done: Boolean(s.done), group: (s.group || "").trim() || undefined }))
+      .map((s) => ({
+        text: (s.text || "").trim(),
+        done: Boolean(s.done),
+        group: (s.group || "").trim() || undefined,
+        evidencePaths: Array.isArray(s.evidencePaths) ? [...new Set(s.evidencePaths.map((p) => String(p).trim()).filter(Boolean))] : []
+      }))
       .filter((s) => s.text.length > 0);
     this.state.plan = cleaned.map((s) => ({
       id: uid("plan"),
       ts: Date.now(),
       text: s.text,
       done: s.done,
-      group: s.group
+      superseded: false,
+      group: s.group,
+      evidencePaths: s.evidencePaths
     }));
     this.recomputeDeviation();
     this.emit();
     return this.state.plan.length;
+  }
+
+  refreshPlanEvidencePaths(workspaceFiles: string[]) {
+    const all = [...new Set(workspaceFiles.map((x) => x.trim()).filter(Boolean))];
+    if (!all.length || !this.state.plan.length) return 0;
+
+    const keywordBuckets: Array<{ keys: RegExp; preferred: RegExp[] }> = [
+      { keys: /监控|monitor|runtime|状态|评估/i, preferred: [/src\/state\.ts$/i, /src\/sidebarView\.ts$/i, /media\/sidebar\.js$/i, /src\/extension\.ts$/i] },
+      { keys: /构建|build|compile|validity|测试|test/i, preferred: [/src\/validity\.ts$/i, /src\/extension\.ts$/i] },
+      { keys: /指导员|chat|llm|对话|assistant/i, preferred: [/src\/llm\.ts$/i, /src\/extension\.ts$/i, /src\/sidebarView\.ts$/i, /media\/sidebar\.js$/i] },
+      { keys: /导入|baseline|goal|plan|ingest/i, preferred: [/src\/ingest\.ts$/i, /src\/extension\.ts$/i, /goal\.md$/i, /plan\.md$/i] },
+      { keys: /ui|样式|主题|webview|看板/i, preferred: [/media\/sidebar\.js$/i, /src\/sidebarView\.ts$/i, /media\/icon\.svg$/i] }
+    ];
+
+    const pickByPreferred = (preferred: RegExp[]) =>
+      all.filter((f) => preferred.some((r) => r.test(f))).slice(0, 3);
+
+    let changed = 0;
+    for (const step of this.state.plan) {
+      const cur = step.evidencePaths ?? [];
+      let next: string[] = [];
+
+      const bucket = keywordBuckets.find((b) => b.keys.test(step.text));
+      if (bucket) next = pickByPreferred(bucket.preferred);
+
+      // Fallback: token overlap with filenames
+      if (!next.length) {
+        const tokens = step.text.toLowerCase().match(/[a-z][a-z0-9_-]{2,}/g) || [];
+        if (tokens.length) {
+          const scored = all
+            .map((f) => {
+              const lf = f.toLowerCase();
+              const score = tokens.reduce((acc, t) => (lf.includes(t) ? acc + 1 : acc), 0);
+              return { f, score };
+            })
+            .filter((x) => x.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 3)
+            .map((x) => x.f);
+          next = scored;
+        }
+      }
+
+      const same = cur.length === next.length && cur.every((x, i) => x === next[i]);
+      if (!same) {
+        step.evidencePaths = next;
+        changed++;
+      }
+    }
+
+    if (changed > 0) this.emit();
+    return changed;
   }
 
   setGoal(goal: Omit<GoalSummary, "updatedAt">) {
@@ -189,6 +248,28 @@ export class StateStore {
       const shouldDone = wanted.has(step.text.trim().toLowerCase());
       if (step.done !== shouldDone) {
         step.done = shouldDone;
+        changed++;
+      }
+    }
+    if (changed > 0) {
+      this.recomputeDeviation();
+      this.emit();
+    }
+    return changed;
+  }
+
+  syncPlanStatuses(doneTexts: string[], supersededTexts: string[]) {
+    const doneSet = new Set(doneTexts.map((t) => t.trim().toLowerCase()).filter(Boolean));
+    const supersededSet = new Set(supersededTexts.map((t) => t.trim().toLowerCase()).filter(Boolean));
+    let changed = 0;
+    for (const step of this.state.plan) {
+      const key = step.text.trim().toLowerCase();
+      const nextSuperseded = supersededSet.has(key);
+      const llmSaysDone = doneSet.has(key);
+      const nextDone = nextSuperseded ? false : (llmSaysDone || step.done);
+      if (step.done !== nextDone || Boolean(step.superseded) !== nextSuperseded) {
+        step.done = nextDone;
+        step.superseded = nextSuperseded;
         changed++;
       }
     }
@@ -288,7 +369,9 @@ export class StateStore {
     const hasGoal = this.state.goal.source !== "none" && this.state.goal.summary.trim().length > 0;
     const { errors, warnings } = this.state.diagnostics;
     const doneCount = this.state.plan.filter((p) => p.done).length;
-    const coverage = hasPlan ? doneCount / Math.max(1, this.state.plan.length) : 0;
+    const supersededCount = this.state.plan.filter((p) => Boolean(p.superseded)).length;
+    const effectiveDone = doneCount + supersededCount;
+    const coverage = hasPlan ? effectiveDone / Math.max(1, this.state.plan.length) : 0;
 
     let score = 0.55 + coverage * 0.25;
     if (!hasGoal) score -= 0.2;
@@ -307,7 +390,7 @@ export class StateStore {
 
     const rationaleParts = [
       `Goal: ${hasGoal ? "set" : "missing"}`,
-      `Plan: ${doneCount}/${this.state.plan.length} done`,
+      `Plan: ${doneCount} done + ${supersededCount} superseded / ${this.state.plan.length}`,
       `Diagnostics: ${errors} errors, ${warnings} warnings`,
       `Build: ${this.state.validity.state}`,
       `Monitor: ${monitor.level}${monitor.loopRisk ? " (loop risk)" : ""} / ${monitorRuntime.state}`
@@ -319,7 +402,7 @@ export class StateStore {
     this.state.assessment = {
       source: "heuristic",
       updatedAt: Date.now(),
-      progress: `Plan completion ${doneCount}/${this.state.plan.length}; diagnostics ${errors} error(s), ${warnings} warning(s); build ${this.state.validity.state}; monitor ${monitorRuntime.state}.`,
+      progress: `Plan completion ${doneCount} done + ${supersededCount} superseded / ${this.state.plan.length}; diagnostics ${errors} error(s), ${warnings} warning(s); build ${this.state.validity.state}; monitor ${monitorRuntime.state}.`,
       deviationScore01: score,
       deviationRationale: rationale,
       level: monitor.level,
@@ -337,9 +420,12 @@ export class StateStore {
     const latestEdit = this.state.timeline.find((t) => t.type === "document/changed" || t.type === "document/saved");
     const latestAssessment = this.state.timeline.find((t) => t.type === "analysis/updated");
     const blocked = this.state.diagnostics.errors > 0 || this.state.validity.state === "failed";
-    const handling = this.state.validity.state === "running" || Boolean(latestAssessment && now - latestAssessment.ts <= 3 * 60 * 1000);
-    const realtime = latestEdit
-      ? Boolean(latestAssessment && latestAssessment.ts >= latestEdit.ts && latestAssessment.ts - latestEdit.ts <= 60 * 1000)
+    const handling = this.state.validity.state === "running" || Boolean(latestAssessment && now - latestAssessment.ts <= 8 * 60 * 1000);
+    const editAgeMs = latestEdit ? now - latestEdit.ts : Infinity;
+    const assessmentAfterEdit = Boolean(latestAssessment && latestAssessment.ts >= (latestEdit?.ts ?? 0) && latestAssessment.ts - (latestEdit?.ts ?? 0) <= 180 * 1000);
+    const noRecentEdits = editAgeMs > 5 * 60 * 1000;
+    const realtime: boolean = latestEdit
+      ? (assessmentAfterEdit || (noRecentEdits && handling) || Boolean(handling && latestAssessment && now - latestAssessment.ts <= 2 * 60 * 1000))
       : handling;
 
     if (!hasGoal) {
@@ -414,9 +500,9 @@ export class StateStore {
       nextActions.push("Save current files or run self-check to force evidence refresh.");
     }
     if (this.state.plan.length > 0) {
-      const doneCount = this.state.plan.filter((p) => p.done).length;
+      const effectiveDone = this.state.plan.filter((p) => p.done || p.superseded).length;
       const hasRecentEdits = Boolean(latestEdit && Date.now() - latestEdit.ts < 30 * 60 * 1000);
-      if (doneCount === 0 && hasRecentEdits) {
+      if (effectiveDone === 0 && hasRecentEdits) {
         level = level === "critical" ? "critical" : "warn";
         reasons.push("Plan progress is 0 but recent code edits exist; mapping evidence may be insufficient.");
         nextActions.push("Run self-check and validate plan-to-code mapping evidence in timeline.");

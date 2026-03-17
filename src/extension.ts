@@ -37,24 +37,29 @@ export function activate(context: vscode.ExtensionContext) {
     if (assessTimer) clearTimeout(assessTimer);
     assessTimer = setTimeout(() => {
       void runProjectAssessment(reason);
-    }, 1200);
+    }, 500);
   };
   const runProjectAssessment = async (reason: string, force = false) => {
     if (assessRunning) return;
-    if (!force && Date.now() - lastAssessAt < 5000) return;
+    if (!force && Date.now() - lastAssessAt < 2500) return;
     assessRunning = true;
     store.setLlmRefresh({ state: "loading", note: reason });
     try {
-      const state = store.snapshot();
-      const evidence = await buildProjectEvidence(state);
-      const assessed = await assessProjectWithOptionalCloud(state, evidence);
+      const files = await listWorkspaceCodeFiles();
+      const relinked = store.refreshPlanEvidencePaths(files);
+      if (relinked > 0) {
+        store.pushTimeline("analysis/updated", `Plan-file links refreshed: ${relinked} step(s).`);
+      }
+      const stateForEvidence = store.snapshot();
+      const evidence = await buildProjectEvidence(stateForEvidence);
+      const assessed = await assessProjectWithOptionalCloud(stateForEvidence, evidence);
       store.applyProjectAssessment(assessed);
       const completion = await inferCompletedPlanTextsWithOptionalCloud(store.snapshot(), evidence);
       if (completion.available) {
-        const changed = store.syncPlanDoneByTexts(completion.completed);
+        const changed = store.syncPlanStatuses(completion.completed, completion.superseded);
         if (changed > 0) {
           store.pushTimeline("plan/step/added", `LLM refreshed plan completion: ${changed} step(s) updated.`);
-        } else if (completion.completed.length === 0) {
+        } else if (completion.completed.length === 0 && completion.superseded.length === 0) {
           store.pushTimeline("analysis/updated", "LLM plan mapping returned 0 completed items from current evidence.");
         }
       } else if (completion.reason && completion.reason !== "no-plan") {
@@ -160,6 +165,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
     const goalRaw = await readWorkspaceRootFile(baselineGoalFile);
     const planRaw = await readWorkspaceRootFile(baselinePlanFile);
+    const workspaceFiles = await listWorkspaceCodeFiles();
     let hasGoal = false;
     let planCount = 0;
 
@@ -179,7 +185,6 @@ export function activate(context: vscode.ExtensionContext) {
       let items = extractPlanItems(planRaw);
       if (items.length > 0 && hasGoal) {
         const snap = store.snapshot();
-        const files = await listWorkspaceCodeFiles();
         const calibrated = await calibratePlanItemsWithOptionalCloud(
           {
             title: snap.goal.title,
@@ -187,7 +192,7 @@ export function activate(context: vscode.ExtensionContext) {
             objectives: snap.goal.objectives
           },
           items,
-          files
+          workspaceFiles
         );
         if (calibrated.applied) {
           items = calibrated.items;
@@ -198,6 +203,10 @@ export function activate(context: vscode.ExtensionContext) {
       }
       if (items.length > 0) {
         planCount = store.setPlan(items);
+        const linked = store.refreshPlanEvidencePaths(workspaceFiles);
+        if (linked > 0) {
+          store.pushTimeline("plan/step/added", `Linked ${linked} plan step(s) to workspace code files.`);
+        }
       }
     }
 

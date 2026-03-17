@@ -49,6 +49,7 @@
     var chatSend = $("chatSend");
     var btnSetGoal = $("btnSetGoal");
     var btnForceRefresh = $("btnForceRefresh");
+    var btnRunValidityCheck = $("btnRunValidityCheck");
     var goalText = $("goalText");
     var planList = $("planList");
 
@@ -67,6 +68,11 @@
     if (btnForceRefresh) {
       btnForceRefresh.addEventListener("click", function () {
         vscode.postMessage({ type: "command/forceRefreshAssessment" });
+      });
+    }
+    if (btnRunValidityCheck) {
+      btnRunValidityCheck.addEventListener("click", function () {
+        vscode.postMessage({ type: "command/runValidityCheck" });
       });
     }
 
@@ -136,9 +142,14 @@
         goalExpanded = false;
         goalText.classList.add("oneLine");
       }
+      var goalSourceEl = $("goalSource");
+      if (goalSourceEl) {
+        var src = state.goal && state.goal.source && state.goal.source !== "none" ? String(state.goal.source) : "";
+        goalSourceEl.textContent = src ? ((i18n.baselineSource || "Baseline source") + ": " + src) : "";
+      }
 
       var v = state.validity || { state: "idle" };
-      var validityLabel = v.state === "idle" ? (i18n.idle || "idle")
+      var validityLabel = v.state === "idle" ? (i18n.validityIdleHint || i18n.idle || "idle")
         : v.state === "running" ? (i18n.running || "running")
           : v.state === "passed" ? (i18n.passed || "passed")
             : (i18n.failed || "failed");
@@ -257,10 +268,24 @@
       }
       var summaryValidity = $("summaryValidity");
       if (summaryValidity) {
-        var validityMeaning = String(a.buildCheckMeaning || i18n.validityMeaningDefault || "");
-        summaryValidity.textContent = validityLabel + " · " + validityMeaning;
-        summaryValidity.title = validityMeaning;
+        summaryValidity.textContent = validityLabel;
+        summaryValidity.title = "";
       }
+      if (btnRunValidityCheck) {
+        btnRunValidityCheck.disabled = v.state === "running";
+        btnRunValidityCheck.textContent = v.state === "running" ? (i18n.running || "running") : (i18n.runCheck || "Run check");
+      }
+
+      var existingDetails = planList.querySelectorAll ? planList.querySelectorAll("details.planGroup") : [];
+      var existingSummary = planList.querySelectorAll ? planList.querySelectorAll("details.planGroup > summary") : [];
+      var stored = window.__planGroupOpen || {};
+      for (var i = 0; i < existingDetails.length && i < existingSummary.length; i += 1) {
+        var d = existingDetails[i];
+        var sum = existingSummary[i];
+        var label = (sum && sum.textContent) ? String(sum.textContent).replace(/\s*·\s*\d+\/\d+$/, "").trim() : "";
+        if (label) stored[label] = d.open;
+      }
+      window.__planGroupOpen = stored;
 
       planList.innerHTML = "";
       var plans = Array.isArray(state.plan) ? state.plan : [];
@@ -285,11 +310,17 @@
         for (var gIdx = 0; gIdx < groupOrder.length; gIdx += 1) {
           var gName = groupOrder[gIdx];
           var gPlans = groups[gName];
-          var gDone = gPlans.filter(function (x) { return x.done; }).length;
+          var gDone = gPlans.filter(function (x) { return x.done || x.superseded; }).length;
 
           var details = document.createElement("details");
           details.className = "planGroup";
-          if (gIdx <= 1) details.open = true;
+          var storedNow = window.__planGroupOpen || {};
+          details.open = storedNow[gName] !== undefined ? storedNow[gName] : (gIdx <= 1);
+          details.addEventListener("toggle", function () {
+            var s = window.__planGroupOpen || {};
+            s[gName] = details.open;
+            window.__planGroupOpen = s;
+          });
 
           var summary = document.createElement("summary");
           summary.className = "planGroupSummary";
@@ -307,14 +338,21 @@
             var inner = document.createElement("div");
             inner.className = "planEntryRow";
             var icon = document.createElement("span");
-            icon.className = p.done ? "planIconDone" : "planIconTodo";
-            icon.textContent = p.done ? "✅" : "⬜";
+            icon.className = p.done ? "planIconDone" : p.superseded ? "planIconSuperseded" : "planIconTodo";
+            icon.textContent = p.done ? "✅" : p.superseded ? "♻️" : "⬜";
             var text = document.createElement("span");
             text.textContent = String(p.text || "");
             if (p.done) text.className = "planTextDone";
+            else if (p.superseded) text.className = "planTextSuperseded";
             inner.appendChild(icon);
             inner.appendChild(text);
             row.appendChild(inner);
+          if (Array.isArray(p.evidencePaths) && p.evidencePaths.length > 0) {
+            var meta = document.createElement("div");
+            meta.className = "small";
+            meta.textContent = "files: " + p.evidencePaths.slice(0, 3).join(", ");
+            row.appendChild(meta);
+          }
             groupBody.appendChild(row);
           }
           details.appendChild(groupBody);
@@ -332,15 +370,19 @@
       var sigAlertsVal = $("sigAlertsVal");
       if (sigAlertsVal) sigAlertsVal.textContent = String((a.alerts || []).length || (m.reasons || []).length || 0);
 
-      chat.innerHTML = "";
       var chatList = Array.isArray(state.chat) ? state.chat : [];
+      var prevLen = (window.__chatPrevLen !== undefined) ? window.__chatPrevLen : 0;
+      chat.innerHTML = "";
       for (var c = 0; c < chatList.length; c += 1) {
         var b = document.createElement("div");
         b.className = "bubble " + (chatList[c].role === "user" ? "user" : "assistant");
         b.textContent = chatList[c].text;
         chat.appendChild(b);
       }
-      chat.scrollTop = chat.scrollHeight;
+      if (chatList.length > prevLen) {
+        chat.scrollTop = chat.scrollHeight;
+      }
+      window.__chatPrevLen = chatList.length;
     }
 
     window.addEventListener("message", function (event) {

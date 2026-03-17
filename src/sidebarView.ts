@@ -130,12 +130,14 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
       deviation: zh ? "偏离度" : "Deviation",
       validity: zh ? "构建校验" : "Build Check",
       runCheck: zh ? "运行校验" : "Run check",
+      validityIdleHint: zh ? "空闲（请运行校验）" : "idle (run check)",
       goal: zh ? "目标基线" : "Goal Baseline",
       importGoal: zh ? "导入目标" : "Import goal",
       importSuccess: zh ? "成功导入" : "Imported",
       importing: zh ? "导入中..." : "Importing...",
       goalHint: zh ? "点击“导入目标”以开始。" : "Click \"Import goal\" to start.",
       goalPlaceholder: zh ? "点击“导入目标”以开始。" : "Click \"Import goal\" to start.",
+      baselineSource: zh ? "基线来源" : "Baseline source",
       signals: zh ? "实时信号（LLM）" : "Runtime Signals (LLM)",
       errors: zh ? "错误" : "Errors",
       warnings: zh ? "警告" : "Warnings",
@@ -215,24 +217,24 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
       .section {
         border: 1px solid var(--border);
         border-radius: 12px;
-        margin-bottom: 10px;
+        margin-bottom: 8px;
         background: var(--panel);
         box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
         overflow: hidden;
       }
       .section .hd {
-        padding: 8px 12px;
+        padding: 6px 10px;
         border-bottom: 1px solid var(--border);
         font-weight: 700;
         background: var(--panel2);
       }
       .section .bd {
-        padding: 10px 12px;
+        padding: 8px 10px;
       }
       .grid4 {
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: 6px;
+        gap: 8px;
       }
       .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
       .space { justify-content: space-between; }
@@ -246,13 +248,13 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
       .kpi {
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: 6px;
+        gap: 8px;
       }
       .pill {
         border: 1px solid var(--border);
         background: #fff;
         border-radius: 10px;
-        padding: 7px 8px;
+        padding: 6px 8px;
       }
       .signalCard { cursor: pointer; user-select: none; }
       .signalCard:hover { background: var(--hover); }
@@ -276,10 +278,12 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
         border: 1px solid var(--border);
         background: #fff;
         border-radius: 10px;
-        padding: 7px 8px;
+        padding: 6px 8px;
       }
       .result .k { font-size: 11px; color: var(--muted); }
-      .result .v { margin-top: 3px; font-weight: 650; }
+      .result .v { margin-top: 2px; font-weight: 650; }
+      .result.result-primary .v { font-size: 14px; font-weight: 700; }
+      .result.result-secondary .v { font-size: 13px; }
       .state-good { background: #e7f6ec; border: 1px solid #9ed0ac; color: #1f5f2a; border-radius: 999px; padding: 2px 8px; display: inline-block; }
       .state-warn { background: #fff7e7; border: 1px solid #ebca8a; color: #7a5600; border-radius: 999px; padding: 2px 8px; display: inline-block; }
       .state-bad { background: #feeceb; border: 1px solid #efb1ad; color: #8b1e1e; border-radius: 999px; padding: 2px 8px; display: inline-block; }
@@ -307,7 +311,7 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
       .item {
         border: 1px solid var(--border);
         border-radius: 8px;
-        padding: 7px 8px;
+        padding: 6px 8px;
         background: #fff;
       }
       .item .meta { color: var(--muted); font-size: 11px; margin-top: 4px; }
@@ -318,7 +322,7 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
       .planEntry {
         border: 1px solid var(--border);
         border-radius: 8px;
-        padding: 7px 8px;
+        padding: 5px 8px;
         background: #fff;
       }
       .planGroup {
@@ -329,28 +333,33 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
       }
       .planGroupSummary {
         cursor: pointer;
-        padding: 7px 10px;
+        padding: 6px 10px;
         background: var(--panel2);
         font-weight: 700;
         border-bottom: 1px solid var(--border);
       }
       .planGroupBody {
-        padding: 8px;
+        padding: 6px 8px;
         display: flex;
         flex-direction: column;
-        gap: 6px;
+        gap: 5px;
       }
       .planEntryRow { display: flex; align-items: flex-start; gap: 8px; }
       .planIconTodo { color: var(--muted); }
       .planIconDone { color: #2e7d32; }
+      .planIconSuperseded { color: #2563eb; }
       .planTextDone { color: #2e7d32; text-decoration: line-through; }
+      .planTextSuperseded { color: #2563eb; text-decoration: line-through; }
       .chat {
         display: flex;
         flex-direction: column;
         gap: 8px;
-        max-height: 190px;
+        height: 190px;
+        min-height: 120px;
+        max-height: 420px;
         overflow: auto;
         padding-right: 4px;
+        resize: vertical;
       }
       .bubble {
         border: 1px solid var(--border);
@@ -406,11 +415,11 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
       .level-warn { background: #fff7e7; border-color: #ebca8a; color: #7a5600; }
       .level-critical { background: #feeceb; border-color: #efb1ad; color: #8b1e1e; }
       .alertTicker {
-        margin-top: 6px;
+        margin-top: 4px;
         border: 1px solid var(--border);
         border-radius: 10px;
         background: #fff;
-        height: 88px;
+        height: 80px;
         overflow: hidden;
         padding: 4px;
       }
@@ -431,6 +440,7 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
       </div>
       <div class="bd">
         <div id="goalText" class="goalText oneLine">${i18n.goalPlaceholder}</div>
+        <div id="goalSource" class="small" style="margin-top: 4px;"></div>
       </div>
     </div>
 
@@ -440,12 +450,12 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
         <button id="btnForceRefresh">${i18n.forceRefresh}</button>
       </div>
       <div class="bd grid4">
-        <div class="result">
+        <div class="result result-primary" style="grid-column: 1 / -1;">
           <div class="k">${i18n.status}</div>
           <div class="v state-warn" id="summaryStatus">${i18n.statusNotStarted}</div>
           <div class="small" id="summaryStatusMeta">—</div>
         </div>
-        <div class="result">
+        <div class="result result-secondary">
           <div class="k">${i18n.progress}</div>
           <div class="v" id="summaryProgress">—</div>
         </div>
@@ -453,9 +463,12 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
           <div class="k">${i18n.deviation}</div>
           <div class="v state-warn" id="summaryDeviation">—</div>
         </div>
-        <div class="result">
+        <div class="result" style="grid-column: 1 / -1;">
           <div class="k">${i18n.validity}</div>
-          <div class="v" id="summaryValidity">—</div>
+          <div class="v row space" style="flex-wrap: wrap; gap: 0.25rem;">
+            <span id="summaryValidity">—</span>
+            <button id="btnRunValidityCheck" class="small">${i18n.runCheck}</button>
+          </div>
         </div>
         <div class="result" style="grid-column: 1 / -1;">
           <div class="k">${i18n.runtime}</div>

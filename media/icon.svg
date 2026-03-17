@@ -1,7 +1,5 @@
 <svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect x="10" y="10" width="108" height="108" rx="24" fill="#2B2B2B"/>
-  <path d="M40 82C40 70.9543 48.9543 62 60 62H88V76C88 87.0457 79.0457 96 68 96H40V82Z" fill="#4FD1C5"/>
-  <path d="M40 54C40 42.9543 48.9543 34 60 34H88V48C88 59.0457 79.0457 68 68 68H40V54Z" fill="#63B3ED"/>
-  <path d="M52 46H74" stroke="#0B1020" stroke-width="6" stroke-linecap="round"/>
-  <path d="M52 74H74" stroke="#0B1020" stroke-width="6" stroke-linecap="round"/>
+  <!-- Code Instructor: document + checkmark, single color for VS Code activity bar -->
+  <rect x="32" y="24" width="64" height="80" rx="8" stroke="currentColor" stroke-width="8" fill="none"/>
+  <path d="M48 56L56 64L80 40" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
