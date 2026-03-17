@@ -58,6 +58,8 @@ export async function buildProjectEvidence(state: AppState): Promise<string> {
     recentUris.push(uri);
   }
 
+  const testFileUris = uris.filter((u) => /\.test\.(ts|tsx|js|jsx)$/i.test(vscode.workspace.asRelativePath(u)));
+
   const seenUri = new Set<string>();
   const dedup = (list: vscode.Uri[]) => {
     const out: vscode.Uri[] = [];
@@ -69,15 +71,17 @@ export async function buildProjectEvidence(state: AppState): Promise<string> {
     }
     return out;
   };
-  const merged = [...dedup(planEvidenceUris), ...dedup(recentUris), ...dedup(uris)].slice(0, 40);
+  const merged = [...dedup(planEvidenceUris), ...dedup(testFileUris), ...dedup(recentUris), ...dedup(uris)].slice(0, 45);
   for (const uri of merged) {
     const rel = vscode.workspace.asRelativePath(uri);
     if (relSeen.has(`seen:${rel}`)) continue;
     relSeen.add(`seen:${rel}`);
-    const txt = await readFileSafe(uri, 2200);
+    const isTest = /\.test\.(ts|tsx|js|jsx)$/i.test(rel);
+    const maxChars = isTest ? 2800 : 2200;
+    const txt = await readFileSafe(uri, maxChars);
     if (!txt?.trim()) continue;
     sections.push(`FILE: ${rel}\n${txt}`);
-    if (sections.length >= 28) break;
+    if (sections.length >= 32) break;
   }
 
   const planPreview = state.plan

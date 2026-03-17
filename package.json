@@ -2,7 +2,7 @@
   "name": "ai-dev-progress-coach",
   "displayName": "Code Instructor",
   "description": "Real-time development progress, goal deviation, and code validity checks for AI-assisted coding.",
-  "version": "0.1.41",
+  "version": "0.1.42",
   "publisher": "Celon-Liu",
   "repository": {
     "type": "git",
