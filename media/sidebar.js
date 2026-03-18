@@ -263,8 +263,8 @@
       var summaryDeviation = $("summaryDeviation");
       if (summaryDeviation) {
         summaryDeviation.textContent = pct((state.deviation || {}).score01 || 0);
-        var score = (state.deviation || {}).score01 || 0;
-        summaryDeviation.className = "v " + (score >= 0.75 ? "state-good" : score >= 0.45 ? "state-warn" : "state-bad");
+        var dev = (state.deviation || {}).score01 || 0;
+        summaryDeviation.className = "v " + (dev <= 0.25 ? "state-good" : dev <= 0.55 ? "state-warn" : "state-bad");
       }
       var summaryValidity = $("summaryValidity");
       if (summaryValidity) {
@@ -341,9 +341,9 @@
             icon.className = p.done ? "planIconDone" : p.superseded ? "planIconSuperseded" : "planIconTodo";
             icon.textContent = p.done ? "✅" : p.superseded ? "♻️" : "⬜";
             var text = document.createElement("span");
+            text.className = "planTextSelectable" + (p.done ? " planTextDone" : p.superseded ? " planTextSuperseded" : "");
             text.textContent = String(p.text || "");
-            if (p.done) text.className = "planTextDone";
-            else if (p.superseded) text.className = "planTextSuperseded";
+            text.style.userSelect = "text";
             inner.appendChild(icon);
             inner.appendChild(text);
             row.appendChild(inner);

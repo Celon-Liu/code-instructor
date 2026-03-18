@@ -16,6 +16,8 @@
   "config.cloud.enabled.desc": "允许调用云端大模型（可能会发送代码片段，取决于提供方与配置）。",
   "config.cloud.provider.desc": "用于偏离度评估与问答的云端提供方。",
   "config.cloud.apiKey.desc": "云端提供方 API Key。",
+  "config.cloud.baseUrl.desc": "仅 custom 时使用：OpenAI 兼容的 API 地址（如 https://api.example.com/v1）。使用 deepseek/openai/anthropic 时留空。",
+  "config.cloud.model.desc": "仅 custom 时使用：自定义端点的模型名（如 gpt-3.5-turbo）。",
   "config.validity.buildCommand.desc": "用于验证代码有效性的命令（构建/编译）。留空时会自动从 package scripts 推断。",
   "config.validity.testCommand.desc": "可选测试命令。留空时会尝试从 package scripts 自动推断（test/test:ci/test:unit）。",
   "config.validity.runTestAfterBuild.desc": "开启后，构建校验通过时会自动继续执行测试命令。",
@@ -23,6 +25,7 @@
   "config.ingest.planFilePath.desc": "可选：计划文件的绝对路径（例如 plan.md）。文件变化时会自动导入计划步骤。",
   "config.ingest.cursorChatStorageDir.desc": "实验功能：扫描（并监听）Cursor 对话存储目录，尝试从会话内容中提取计划步骤。",
   "config.ingest.traeSessionExportPath.desc": "推荐（Trae）：Trae 导出当前会话的文件或目录路径。插件会监听并自动导入计划步骤。",
-  "config.telemetry.maxEvents.desc": "内存中保留的时间线事件最大数量。"
+  "config.telemetry.maxEvents.desc": "内存中保留的时间线事件最大数量。",
+  "config.notify.planMismatchPrompt.desc": "检测到计划与代码不符时（warn/critical 且告警含计划相关建议），弹出提示要求更新 plan.md。"
 }
 

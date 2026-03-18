@@ -2,7 +2,7 @@
   "name": "ai-dev-progress-coach",
   "displayName": "Code Instructor",
   "description": "Real-time development progress, goal deviation, and code validity checks for AI-assisted coding.",
-  "version": "0.1.42",
+  "version": "1.0.0",
   "publisher": "Celon-Liu",
   "repository": {
     "type": "git",
@@ -105,6 +105,16 @@
           "default": "",
           "description": "%config.cloud.apiKey.desc%"
         },
+        "aiDevCoach.cloud.baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "%config.cloud.baseUrl.desc%"
+        },
+        "aiDevCoach.cloud.model": {
+          "type": "string",
+          "default": "gpt-3.5-turbo",
+          "description": "%config.cloud.model.desc%"
+        },
         "aiDevCoach.validity.buildCommand": {
           "type": "string",
           "default": "",
@@ -144,6 +154,11 @@
           "type": "number",
           "default": 500,
           "description": "%config.telemetry.maxEvents.desc%"
+        },
+        "aiDevCoach.notify.planMismatchPrompt": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.notify.planMismatchPrompt.desc%"
         }
       }
     }

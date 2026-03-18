@@ -146,7 +146,9 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
       monitor: zh ? "监理告警" : "Monitor Alerts",
       selfCheck: zh ? "运行自检" : "Run self-check",
       plan: zh ? "执行计划" : "Execution Plan",
-      planHelp: zh ? "计划状态由 LLM 基于代码证据实时判定并刷新。" : "Plan completion is auto-evaluated and refreshed by LLM from code evidence.",
+      planHelp: zh
+        ? "从 plan.md 导入计划后，LLM 完全基于代码证据判断完成度；计划变更请先改 plan.md，刷新时会自动检测并重新导入。"
+        : "Import from plan.md; LLM infers completion from code only. To change plan, edit plan.md; refresh auto-detects and re-imports.",
       noPlanYet: zh ? "暂无计划步骤（导入目标时会读取 plan.md）。" : "No plan steps yet (plan.md is loaded when importing goal baseline).",
       groupDefault: zh ? "未分组" : "Ungrouped",
       chat: zh ? "代码指导员" : "Code Coach",
@@ -348,6 +350,7 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
       .planIconTodo { color: var(--muted); }
       .planIconDone { color: #2e7d32; }
       .planIconSuperseded { color: #2563eb; }
+      .planTextSelectable { user-select: text; -webkit-user-select: text; flex: 1; }
       .planTextDone { color: #2e7d32; text-decoration: line-through; }
       .planTextSuperseded { color: #2563eb; text-decoration: line-through; }
       .chat {

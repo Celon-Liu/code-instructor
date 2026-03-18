@@ -33,6 +33,7 @@ export function activate(context: vscode.ExtensionContext) {
   let assessTimer: ReturnType<typeof setTimeout> | undefined;
   let assessRunning = false;
   let lastAssessAt = 0;
+  let lastPlanMismatchNotifyAt: number | undefined;
   const scheduleProjectAssessment = (reason: string) => {
     if (assessTimer) clearTimeout(assessTimer);
     assessTimer = setTimeout(() => {
@@ -45,16 +46,37 @@ export function activate(context: vscode.ExtensionContext) {
     assessRunning = true;
     store.setLlmRefresh({ state: "loading", note: reason });
     try {
+      const cfg = vscode.workspace.getConfiguration("aiDevCoach");
+      const cloudEnabled = cfg.get<boolean>("cloud.enabled", false);
+      const cloudApiKey = (cfg.get<string>("cloud.apiKey", "") || "").trim();
+      if (!cloudEnabled || !cloudApiKey) {
+        store.applyProjectAssessment({
+          source: "heuristic",
+          progress: "云端 LLM 未开启，插件无法正常作用。",
+          deviationScore01: 0.5,
+          deviationRationale: "请开启 aiDevCoach.cloud.enabled 并配置 API Key。",
+          level: "critical",
+          alerts: ["云端 LLM 未开启，插件无法正常作用。"],
+          nextActions: ["开启 aiDevCoach.cloud.enabled 并配置 API Key 后重新打开侧边栏。"],
+          buildCheckMeaning: "构建校验用于验证配置的构建命令是否可通过。"
+        });
+        store.setLlmRefresh({ state: "done", note: "cloud-required" });
+        lastAssessAt = Date.now();
+        return;
+      }
+      const planReimported = await reimportPlanIfFileChanged();
       const files = await listWorkspaceCodeFiles();
       const relinked = store.refreshPlanEvidencePaths(files);
       if (relinked > 0) {
         store.pushTimeline("analysis/updated", `Plan-file links refreshed: ${relinked} step(s).`);
       }
+      if (planReimported) {
+        store.pushTimeline("analysis/updated", "plan.md changed, re-imported; LLM will infer completion.");
+      }
       const stateForEvidence = store.snapshot();
       const evidence = await buildProjectEvidence(stateForEvidence);
-      const assessed = await assessProjectWithOptionalCloud(stateForEvidence, evidence);
-      store.applyProjectAssessment(assessed);
-      const completion = await inferCompletedPlanTextsWithOptionalCloud(store.snapshot(), evidence);
+      // Plan inference first: map code progress to plan (done/superseded), then assessment
+      const completion = await inferCompletedPlanTextsWithOptionalCloud(stateForEvidence, evidence);
       if (completion.available) {
         const changed = store.syncPlanStatuses(completion.completed, completion.superseded);
         if (changed > 0) {
@@ -65,9 +87,40 @@ export function activate(context: vscode.ExtensionContext) {
       } else if (completion.reason && completion.reason !== "no-plan") {
         store.pushTimeline("analysis/updated", `LLM plan mapping skipped: ${completion.reason}`);
       }
+      const stateAfterPlan = store.snapshot();
+      const assessed = await assessProjectWithOptionalCloud(stateAfterPlan, evidence);
+      store.applyProjectAssessment(assessed);
       store.pushTimeline("analysis/updated", `Project assessment updated (${assessed.source}) [${reason}]`);
       store.setLlmRefresh({ state: "done", note: `${assessed.source}:${reason}` });
       lastAssessAt = Date.now();
+
+      const notifyPlanMismatch = cfg.get<boolean>("notify.planMismatchPrompt", true);
+      if (notifyPlanMismatch && stateAfterPlan.plan.length > 0 && (assessed.level === "warn" || assessed.level === "critical")) {
+        const planMismatchKeywords = /plan\.md|计划|更新|同步|不符|不匹配|plan.*mismatch|update.*plan/i;
+        const text = [...(assessed.alerts || []), ...(assessed.nextActions || [])].join(" ");
+        if (planMismatchKeywords.test(text)) {
+          const COOLDOWN_MS = 10 * 60 * 1000;
+          const now = Date.now();
+          if (now - (lastPlanMismatchNotifyAt ?? 0) > COOLDOWN_MS) {
+            lastPlanMismatchNotifyAt = now;
+            const msg = isZh ? "计划与代码不符，建议更新 plan.md" : "Plan and code mismatch; consider updating plan.md";
+            const openLabel = isZh ? "打开 plan.md" : "Open plan.md";
+            const reimportLabel = isZh ? "重新导入 goal.md 和 plan.md" : "Re-import goal.md and plan.md";
+            const choice = await vscode.window.showWarningMessage(msg, openLabel, reimportLabel, isZh ? "忽略" : "Dismiss");
+            if (choice === openLabel) {
+              const planPath = (cfg.get<string>("ingest.planFilePath", "") || "").trim();
+              const uri = planPath
+                ? vscode.Uri.file(planPath)
+                : vscode.workspace.workspaceFolders?.[0]
+                  ? vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, baselinePlanFile)
+                  : undefined;
+              if (uri) void vscode.window.showTextDocument(uri, { preview: false });
+            } else if (choice === reimportLabel) {
+              await importWorkspaceBaselines("plan-mismatch-notification", false);
+            }
+          }
+        }
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       store.setLlmRefresh({ state: "error", note: msg.slice(0, 180) });
@@ -136,13 +189,44 @@ export function activate(context: vscode.ExtensionContext) {
 
   const baselineGoalFile = "goal.md";
   const baselinePlanFile = "plan.md";
+  let lastPlanFileHash: string | undefined;
+
+  const getPlanFileContent = async (): Promise<string | undefined> => {
+    const cfg = vscode.workspace.getConfiguration("aiDevCoach");
+    const customPath = (cfg.get<string>("ingest.planFilePath", "") || "").trim();
+    if (customPath) {
+      try {
+        const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(customPath));
+        return Buffer.from(bytes).toString("utf8");
+      } catch {
+        return undefined;
+      }
+    }
+    return readWorkspaceRootFile(baselinePlanFile);
+  };
+
+  const reimportPlanIfFileChanged = async (): Promise<boolean> => {
+    const raw = await getPlanFileContent();
+    if (!raw?.trim()) return false;
+    const hash = `${raw.length}:${raw.slice(0, 200)}`;
+    if (lastPlanFileHash === hash) return false;
+    lastPlanFileHash = hash;
+    const items = extractPlanItems(raw).map((i) => ({ ...i, done: false }));
+    if (items.length === 0) return false;
+    store.setPlan(items);
+    const workspaceFiles = await listWorkspaceCodeFiles();
+    store.refreshPlanEvidencePaths(workspaceFiles);
+    store.pushTimeline("plan/baseline/imported", `Plan re-imported from plan.md (${items.length} steps, LLM will infer status).`);
+    return true;
+  };
+
   const listWorkspaceCodeFiles = async () => {
     const ws = vscode.workspace.workspaceFolders?.[0];
     if (!ws) return [] as string[];
     const uris = await vscode.workspace.findFiles(
-      "**/*.{ts,tsx,js,jsx,json,md,yml,yaml}",
-      "**/{node_modules,dist,.git,out,.next,coverage}/**",
-      120
+      "**/*.{ts,tsx,js,jsx,json,md,yml,yaml,py,pyi,go,rs,java,kt,c,cpp,h}",
+      "**/{node_modules,dist,.git,out,.next,coverage,__pycache__,venv,.venv}/**",
+      150
     );
     return uris.map((u) => vscode.workspace.asRelativePath(u));
   };
@@ -182,6 +266,7 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }
     if (planRaw) {
+      lastPlanFileHash = `${planRaw.length}:${planRaw.slice(0, 200)}`;
       let items = extractPlanItems(planRaw);
       if (items.length > 0 && hasGoal) {
         const snap = store.snapshot();
@@ -202,7 +287,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
       }
       if (items.length > 0) {
-        planCount = store.setPlan(items);
+        planCount = store.setPlan(items.map((i) => ({ ...i, done: false })));
         const linked = store.refreshPlanEvidencePaths(workspaceFiles);
         if (linked > 0) {
           store.pushTimeline("plan/step/added", `Linked ${linked} plan step(s) to workspace code files.`);
@@ -494,10 +579,13 @@ export function activate(context: vscode.ExtensionContext) {
       const cloudEnabled = cfg.get<boolean>("cloud.enabled", false);
       const provider = cfg.get<string>("cloud.provider", "deepseek");
       const key = cfg.get<string>("cloud.apiKey", "");
+      const baseUrl = (cfg.get<string>("cloud.baseUrl", "") || "").trim();
       if (!cloudEnabled) {
         add("WARN", "Cloud LLM", "Disabled. Local fallback only.");
       } else if (!key.trim()) {
         add("FAIL", "Cloud LLM", `Enabled (${provider}) but API key missing.`);
+      } else if (provider === "custom" && !baseUrl) {
+        add("FAIL", "Cloud LLM", "Custom provider selected but baseUrl not configured (aiDevCoach.cloud.baseUrl).");
       } else {
         add("PASS", "Cloud LLM", `Enabled (${provider}) with API key configured.`);
       }

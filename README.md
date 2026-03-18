@@ -76,6 +76,8 @@ Type a question in the chat input and press Enter. The assistant answers based o
 | `aiDevCoach.cloud.enabled` | Enable cloud LLM for assessment/chat | `false` |
 | `aiDevCoach.cloud.provider` | Provider: `deepseek`, `openai`, `anthropic`, `custom` | `deepseek` |
 | `aiDevCoach.cloud.apiKey` | API key for the provider | (empty) |
+| `aiDevCoach.cloud.baseUrl` | Custom only: OpenAI-compatible API base URL (e.g. `https://api.example.com/v1`) | (empty) |
+| `aiDevCoach.cloud.model` | Custom only: model name (e.g. `gpt-3.5-turbo`) | `gpt-3.5-turbo` |
 | `aiDevCoach.ingest.planFilePath` | Custom plan file path | (empty) |
 
 > **Note:** Cloud calls are optional. If disabled, chat uses local heuristics based on current signals.

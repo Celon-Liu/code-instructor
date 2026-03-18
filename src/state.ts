@@ -179,7 +179,7 @@ export class StateStore {
       const bucket = keywordBuckets.find((b) => b.keys.test(step.text));
       if (bucket) next = pickByPreferred(bucket.preferred);
 
-      // Fallback: token overlap with filenames
+      // Fallback: token overlap with filenames (English/identifiers)
       if (!next.length) {
         const tokens = step.text.toLowerCase().match(/[a-z][a-z0-9_-]{2,}/g) || [];
         if (tokens.length) {
@@ -187,6 +187,29 @@ export class StateStore {
             .map((f) => {
               const lf = f.toLowerCase();
               const score = tokens.reduce((acc, t) => (lf.includes(t) ? acc + 1 : acc), 0);
+              return { f, score };
+            })
+            .filter((x) => x.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 3)
+            .map((x) => x.f);
+          next = scored;
+        }
+      }
+      // Fallback for Chinese/generic: extract 2-4 char segments and match path
+      if (!next.length && step.text.length >= 2) {
+        const segments = new Set<string>();
+        const normalized = step.text.replace(/\s+/g, "");
+        for (let len = 4; len >= 2 && segments.size < 8; len--) {
+          for (let i = 0; i <= normalized.length - len; i++) {
+            const seg = normalized.slice(i, i + len);
+            if (/[\u4e00-\u9fa5a-zA-Z0-9]/.test(seg)) segments.add(seg);
+          }
+        }
+        if (segments.size > 0) {
+          const scored = all
+            .map((f) => {
+              const score = [...segments].filter((s) => f.includes(s)).length;
               return { f, score };
             })
             .filter((x) => x.score > 0)
@@ -211,14 +234,6 @@ export class StateStore {
   setGoal(goal: Omit<GoalSummary, "updatedAt">) {
     this.state.goal = { ...goal, updatedAt: Date.now() };
     this.pushTimeline("plan/step/added", `Goal updated from ${goal.source}: ${goal.title || "Untitled goal"}`);
-    this.recomputeDeviation();
-    this.emit();
-  }
-
-  togglePlanDone(id: string) {
-    const step = this.state.plan.find((s) => s.id === id);
-    if (!step) return;
-    step.done = !step.done;
     this.recomputeDeviation();
     this.emit();
   }
@@ -258,6 +273,7 @@ export class StateStore {
     return changed;
   }
 
+  /** Sync plan status from LLM inference only. No manual override. */
   syncPlanStatuses(doneTexts: string[], supersededTexts: string[]) {
     const doneSet = new Set(doneTexts.map((t) => t.trim().toLowerCase()).filter(Boolean));
     const supersededSet = new Set(supersededTexts.map((t) => t.trim().toLowerCase()).filter(Boolean));
@@ -265,8 +281,7 @@ export class StateStore {
     for (const step of this.state.plan) {
       const key = step.text.trim().toLowerCase();
       const nextSuperseded = supersededSet.has(key);
-      const llmSaysDone = doneSet.has(key);
-      const nextDone = nextSuperseded ? false : (llmSaysDone || step.done);
+      const nextDone = nextSuperseded ? false : doneSet.has(key);
       if (step.done !== nextDone || Boolean(step.superseded) !== nextSuperseded) {
         step.done = nextDone;
         step.superseded = nextSuperseded;
@@ -387,6 +402,7 @@ export class StateStore {
     if (monitor.level === "critical") score -= 0.18;
 
     score = Math.max(0, Math.min(1, score));
+    const deviationScore = 1 - score;
 
     const rationaleParts = [
       `Goal: ${hasGoal ? "set" : "missing"}`,
@@ -396,14 +412,14 @@ export class StateStore {
       `Monitor: ${monitor.level}${monitor.loopRisk ? " (loop risk)" : ""} / ${monitorRuntime.state}`
     ];
     const rationale = rationaleParts.join(" | ");
-    this.state.deviation = { score01: score, rationale };
+    this.state.deviation = { score01: deviationScore, rationale };
     this.state.monitor = monitor;
     this.state.monitorRuntime = monitorRuntime;
     this.state.assessment = {
       source: "heuristic",
       updatedAt: Date.now(),
       progress: `Plan completion ${doneCount} done + ${supersededCount} superseded / ${this.state.plan.length}; diagnostics ${errors} error(s), ${warnings} warning(s); build ${this.state.validity.state}; monitor ${monitorRuntime.state}.`,
-      deviationScore01: score,
+      deviationScore01: deviationScore,
       deviationRationale: rationale,
       level: monitor.level,
       alerts: monitor.reasons,
@@ -419,7 +435,7 @@ export class StateStore {
     const engaged = hasGoal && hasPlan;
     const latestEdit = this.state.timeline.find((t) => t.type === "document/changed" || t.type === "document/saved");
     const latestAssessment = this.state.timeline.find((t) => t.type === "analysis/updated");
-    const blocked = this.state.diagnostics.errors > 0 || this.state.validity.state === "failed";
+    const blocked = this.state.diagnostics.errors > 0;
     const handling = this.state.validity.state === "running" || Boolean(latestAssessment && now - latestAssessment.ts <= 8 * 60 * 1000);
     const editAgeMs = latestEdit ? now - latestEdit.ts : Infinity;
     const assessmentAfterEdit = Boolean(latestAssessment && latestAssessment.ts >= (latestEdit?.ts ?? 0) && latestAssessment.ts - (latestEdit?.ts ?? 0) <= 180 * 1000);
@@ -443,7 +459,7 @@ export class StateStore {
         handling,
         realtime,
         state: "blocked",
-        detail: "Blocked by diagnostics/build failure."
+        detail: "Blocked by unresolved errors. Fix in Problems panel and re-run Build Check."
       };
     }
     if (engaged && handling && realtime) {
@@ -487,12 +503,7 @@ export class StateStore {
     if (this.state.diagnostics.errors > 0) {
       level = "critical";
       reasons.push(`${this.state.diagnostics.errors} unresolved error diagnostics.`);
-      nextActions.push("Fix first error in Problems panel and rerun validity check.");
-    }
-    if (this.state.validity.state === "failed") {
-      level = "critical";
-      reasons.push("Latest build validity check failed.");
-      nextActions.push("Address build failure tail and rerun check.");
+      nextActions.push("Fix first error in Problems panel, then re-run Build Check to unblock.");
     }
     if (runtime.state === "lagging") {
       level = level === "critical" ? "critical" : "warn";
@@ -505,7 +516,7 @@ export class StateStore {
       if (effectiveDone === 0 && hasRecentEdits) {
         level = level === "critical" ? "critical" : "warn";
         reasons.push("Plan progress is 0 but recent code edits exist; mapping evidence may be insufficient.");
-        nextActions.push("Run self-check and validate plan-to-code mapping evidence in timeline.");
+        nextActions.push("Run self-check or Force refresh to re-evaluate; enable cloud LLM for automatic plan completion.");
       }
     }
 

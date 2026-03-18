@@ -16,6 +16,8 @@
   "config.cloud.enabled.desc": "Allow cloud LLM calls (may send code snippets depending on provider configuration).",
   "config.cloud.provider.desc": "Cloud provider used for goal deviation scoring and Q&A.",
   "config.cloud.apiKey.desc": "API key for the configured cloud provider.",
+  "config.cloud.baseUrl.desc": "Custom provider only: OpenAI-compatible API base URL (e.g. https://api.example.com/v1). Leave empty when using deepseek/openai/anthropic.",
+  "config.cloud.model.desc": "Custom provider only: model name for the custom endpoint (e.g. gpt-3.5-turbo).",
   "config.validity.buildCommand.desc": "Command used to validate code (build/compile). Leave empty to auto-infer from package scripts.",
   "config.validity.testCommand.desc": "Optional test command. If empty, the extension will try to infer from package scripts (test/test:ci/test:unit).",
   "config.validity.runTestAfterBuild.desc": "If enabled, automatically run test command after a successful build check.",
@@ -23,6 +25,7 @@
   "config.ingest.planFilePath.desc": "Optional: absolute path to a plan file (e.g. plan.md). When it changes, plan steps will be imported automatically.",
   "config.ingest.cursorChatStorageDir.desc": "Experimental: a directory to scan (and watch) for Cursor chat storage. The extension will attempt to extract plan-like steps from stored conversations.",
   "config.ingest.traeSessionExportPath.desc": "Recommended (Trae): a file or folder path where Trae exports the current chat session. The extension will watch it and import plan steps automatically.",
-  "config.telemetry.maxEvents.desc": "Max events kept in memory for progress timeline."
+  "config.telemetry.maxEvents.desc": "Max events kept in memory for progress timeline.",
+  "config.notify.planMismatchPrompt.desc": "When plan and code mismatch is detected (warn/critical + plan-related alerts), show a notification prompting to update plan.md."
 }
 
